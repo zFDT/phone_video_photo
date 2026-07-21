@@ -1,0 +1,44 @@
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Gradle
+.gradle/
+build/
+*/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android generated files
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing and local secrets
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+secrets.properties
+
+# Kotlin / Java generated output
+*.class
+*.hprof
+
+# Local analysis data and media samples
+.frameyu-cache/
+test-media/
+*.mp4
+*.mov
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# OS files
+.DS_Store
+Thumbs.db
