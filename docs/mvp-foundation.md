@@ -33,3 +33,8 @@
 ```powershell
 ./gradlew :app:connectedDebugAndroidTest
 ```
+
+## 已提交记录
+
+- `31770f2 chore: initialize mvp foundation`：规格、计划、项目骨架、基础 Room 数据层和版本控制配置。
+- `bf3f84b feat: add media domain and room data layer`：应用模块配置和领域模型测试。
