@@ -23,6 +23,10 @@
 - 创建：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
 - 创建：`app/src/main/res/values/strings.xml`
 - 创建：`app/src/test/java/com/frameyu/app/SmokeTest.kt`
+- 创建：`gradlew`
+- 创建：`gradlew.bat`
+- 创建：`gradle/wrapper/gradle-wrapper.jar`
+- 创建：`gradle/wrapper/gradle-wrapper.properties`
 
 ### 任务 2 建立领域模型和本地数据库
 
@@ -127,11 +131,15 @@
 
 `MainActivity` 使用 Compose 显示应用名称和当前媒体权限状态；`FrameYuApplication` 初始化 Room 数据库和任务调度器依赖。
 
-- [ ] **步骤 3：运行编译验证**
+- [ ] **步骤 3：接入 Gradle Wrapper 和核心依赖**
+
+使用 Gradle 8.12 Wrapper，接入 Room + KSP、WorkManager、Media3、ML Kit、MediaPipe、ExifInterface。Android SDK 使用本机已安装的 API 35。
+
+- [ ] **步骤 4：运行编译验证**
 
 运行：`./gradlew :app:assembleDebug :app:testDebugUnitTest`
 
-预期：Debug APK 构建成功，单元测试任务通过。
+验证记录：`./gradlew.bat --offline :app:assembleDebug :app:testDebugUnitTest` 已成功执行。当前任务 3 的 MediaStore UI 和设备测试仍未完成。
 
 ## 任务 2：建立领域模型和本地数据库
 

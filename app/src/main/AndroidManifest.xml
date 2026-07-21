@@ -6,7 +6,7 @@
         android:allowBackup="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight.NoActionBar">
+        android:theme="@style/Theme.FrameYu">
         <activity
             android:name=".MainActivity"
             android:exported="true">

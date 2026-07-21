@@ -103,8 +103,8 @@ class MediaStoreScanner(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             columns += MediaStore.MediaColumns.RELATIVE_PATH
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            columns += MediaStore.MediaColumns.IS_HDR
+        if (!isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            columns += HAS_GAIN_MAP_COLUMN
         }
         return columns.toTypedArray()
     }
@@ -134,8 +134,8 @@ class MediaStoreScanner(
             height = intOrNull(MediaStore.MediaColumns.HEIGHT)?.coerceAtLeast(0) ?: 0,
             rotationDegrees = rotation,
             sizeBytes = longOrNull(MediaStore.MediaColumns.SIZE)?.coerceAtLeast(0L) ?: 0L,
-            isHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                intOrNull(MediaStore.MediaColumns.IS_HDR)?.let { it != 0 } == true,
+            isHdr = !isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                intOrNull(HAS_GAIN_MAP_COLUMN)?.let { it != 0 } == true,
             relativePath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 stringOrNull(MediaStore.MediaColumns.RELATIVE_PATH)
             } else {
@@ -168,5 +168,6 @@ class MediaStoreScanner(
         const val DEFAULT_BATCH_SIZE = 100
         const val MILLIS_PER_SECOND = 1_000L
         const val DEGREES_IN_CIRCLE = 360
+        const val HAS_GAIN_MAP_COLUMN = "has_gain_map"
     }
 }

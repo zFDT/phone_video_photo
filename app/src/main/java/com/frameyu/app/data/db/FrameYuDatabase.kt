@@ -117,9 +117,7 @@ interface AnalysisTaskDao {
 
 @Database(
     entities = [MediaAssetEntity::class, AnalysisCandidateEntity::class, AnalysisTaskEntity::class],
-    version = 1,
-    name = "frameyu.db",
-    exportSchema = false
+    version = 1
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
