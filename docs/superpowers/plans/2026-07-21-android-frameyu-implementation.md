@@ -139,7 +139,7 @@
 
 运行：`./gradlew :app:assembleDebug :app:testDebugUnitTest`
 
-验证记录：`./gradlew.bat --offline :app:assembleDebug :app:testDebugUnitTest` 已成功执行。当前任务 3 的 MediaStore UI 和设备测试仍未完成。
+验证记录：`./gradlew.bat --offline :app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功执行。任务 3 已完成代码实现；真实设备上的 `connectedDebugAndroidTest` 仍需连接 Redmi K70 Pro 后执行。
 
 ## 任务 2：建立领域模型和本地数据库
 
@@ -163,19 +163,19 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 
 ## 任务 3：实现 MediaStore 媒体索引
 
-- [ ] **步骤 1：实现扫描查询**
+- [x] **步骤 1：实现扫描查询**
 
 查询图片和视频集合，读取 URI、MIME、拍摄时间、时长、宽高、方向、文件大小、HDR 标记和相册相对路径；使用分页或批量读取，避免一次性加载全部结果。
 
-- [ ] **步骤 2：实现增量同步**
+- [x] **步骤 2：实现增量同步**
 
 以 URI、修改时间和文件大小作为首轮变更判断，只有新媒体或元数据发生变化时才更新 Room。
 
-- [ ] **步骤 3：实现权限和 URI 访问封装**
+- [x] **步骤 3：实现权限和 URI 访问封装**
 
 集中处理 Photo Picker 持久化授权、媒体读取权限和 `ACCESS_MEDIA_LOCATION`，业务层不直接调用权限 API。
 
-- [ ] **步骤 4：实现媒体库界面**
+- [x] **步骤 4：实现媒体库界面**
 
 显示媒体类型、扫描进度、最近分析任务和用户选择入口。
 
@@ -184,6 +184,8 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 运行：`./gradlew :app:connectedDebugAndroidTest`
 
 预期：测试设备上可以读取测试媒体元数据，未授权时显示明确的授权引导。
+
+说明：当前已完成 AndroidTest 编译验证；由于本机未连接 Redmi K70 Pro，尚未执行 `connectedDebugAndroidTest`。
 
 ## 任务 4：建立分析接口和基础画质评分
 

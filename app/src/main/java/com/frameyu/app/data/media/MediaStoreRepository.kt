@@ -13,11 +13,22 @@ class MediaStoreRepository(
 
     val scanState: StateFlow<MediaScanState> = _scanState.asStateFlow()
 
+    suspend fun mediaCount(): Int = scanner.mediaCount()
+
+    /** 执行全量扫描，并将扫描状态暴露给上层。 */
+    suspend fun scanAll(scanBoundaryMillis: Long = System.currentTimeMillis()): Int =
+        scanIncremental(sinceLastModifiedMillis = null, scanBoundaryMillis = scanBoundaryMillis)
+
     /** 扫描指定修改时间之后的媒体；传入 null 时执行首次全量扫描。 */
-    suspend fun scanIncremental(sinceLastModifiedMillis: Long? = null): Int {
-        _scanState.value = MediaScanState.Scanning(sinceLastModifiedMillis)
+    suspend fun scanIncremental(
+        sinceLastModifiedMillis: Long? = null,
+        scanBoundaryMillis: Long = System.currentTimeMillis(),
+    ): Int {
+        _scanState.value = MediaScanState.Scanning(sinceLastModifiedMillis, 0, 0)
         return try {
-            val indexedCount = scanner.scan(sinceLastModifiedMillis)
+            val indexedCount = scanner.scan(sinceLastModifiedMillis, scanBoundaryMillis) { processed, total ->
+                _scanState.value = MediaScanState.Scanning(sinceLastModifiedMillis, processed, total)
+            }
             _scanState.value = MediaScanState.Completed(indexedCount)
             indexedCount
         } catch (cancellation: CancellationException) {
@@ -36,6 +47,8 @@ sealed interface MediaScanState {
 
     data class Scanning(
         val sinceLastModifiedMillis: Long?,
+        val processed: Int,
+        val total: Int,
     ) : MediaScanState
 
     data class Completed(

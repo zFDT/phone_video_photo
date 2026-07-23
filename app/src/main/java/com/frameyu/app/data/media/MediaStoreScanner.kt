@@ -12,6 +12,23 @@ import com.frameyu.app.data.db.MediaAssetEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+internal fun validateMediaStoreBatchSize(batchSize: Int) {
+    require(batchSize > 0) { "扫描批次大小必须大于零" }
+}
+
+internal fun mediaStoreSecondsToMillis(seconds: Long): Long {
+    return seconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / MILLIS_PER_SECOND) * MILLIS_PER_SECOND
+}
+
+internal fun filterChangedMediaAssets(
+    candidates: List<MediaAssetEntity>,
+    existingByUri: Map<String, MediaAssetEntity>,
+): List<MediaAssetEntity> = candidates.filter { candidate ->
+    val existing = existingByUri[candidate.uri]
+    existing == null || existing.lastModifiedMillis != candidate.lastModifiedMillis ||
+        existing.sizeBytes != candidate.sizeBytes
+}
+
 /** 从 MediaStore 分批读取本地图片和视频，并写入媒体索引。 */
 class MediaStoreScanner(
     private val contentResolver: ContentResolver,
@@ -19,47 +36,80 @@ class MediaStoreScanner(
     @VisibleForTesting private val batchSize: Int = DEFAULT_BATCH_SIZE,
 ) {
     init {
-        require(batchSize > 0) { "扫描批次大小必须大于零" }
+        validateMediaStoreBatchSize(batchSize)
     }
 
     /**
      * 扫描最近修改过的媒体；首次扫描时传入 null。
-     * 返回本次从 MediaStore 读取并写入的媒体数量。
+     * 返回本次新建或发生元数据变化并写入的媒体数量。
      */
-    suspend fun scan(sinceLastModifiedMillis: Long? = null): Int = withContext(Dispatchers.IO) {
+    suspend fun scan(
+        sinceLastModifiedMillis: Long? = null,
+        scanBoundaryMillis: Long = System.currentTimeMillis(),
+        onProgress: (suspend (processed: Int, total: Int) -> Unit)? = null,
+    ): Int = withContext(Dispatchers.IO) {
         var indexedCount = 0
+        var processed = 0
+        val total = queryCount(sinceLastModifiedMillis, scanBoundaryMillis)
+        onProgress?.invoke(0, total)
         queryCollection(
             collectionUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             isVideo = false,
             sinceLastModifiedMillis = sinceLastModifiedMillis,
+            scanBoundaryMillis = scanBoundaryMillis,
         ) { batch ->
-            mediaAssetDao.upsertAll(batch)
-            indexedCount += batch.size
+            indexedCount += upsertChangedBatch(batch)
+            processed += batch.size
+            onProgress?.invoke(processed, total)
         }
         queryCollection(
             collectionUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             isVideo = true,
             sinceLastModifiedMillis = sinceLastModifiedMillis,
+            scanBoundaryMillis = scanBoundaryMillis,
         ) { batch ->
-            mediaAssetDao.upsertAll(batch)
-            indexedCount += batch.size
+            indexedCount += upsertChangedBatch(batch)
+            processed += batch.size
+            onProgress?.invoke(processed, total)
         }
         indexedCount
+    }
+
+    suspend fun mediaCount(): Int = withContext(Dispatchers.IO) {
+        mediaAssetDao.count()
+    }
+
+    private fun queryCount(sinceLastModifiedMillis: Long?, scanBoundaryMillis: Long): Int {
+        val window = createMediaStoreScanWindow(sinceLastModifiedMillis, scanBoundaryMillis)
+        return listOf(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+        ).sumOf { uri ->
+        contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), window.selection, window.selectionArgs, null)
+                ?.use { it.count } ?: error("MediaStore 查询未返回 Cursor: $uri")
+        }
+    }
+
+    private suspend fun upsertChangedBatch(batch: List<MediaAssetEntity>): Int {
+        val existingByUri = mediaAssetDao.getByUris(batch.map(MediaAssetEntity::uri)).associateBy(MediaAssetEntity::uri)
+        val changedAssets = filterChangedMediaAssets(batch, existingByUri)
+        if (changedAssets.isNotEmpty()) {
+            mediaAssetDao.upsertAll(changedAssets)
+        }
+        return changedAssets.size
     }
 
     private suspend fun queryCollection(
         collectionUri: Uri,
         isVideo: Boolean,
         sinceLastModifiedMillis: Long?,
+        scanBoundaryMillis: Long,
         onBatch: suspend (List<MediaAssetEntity>) -> Unit,
     ) {
         val projection = projectionFor(isVideo)
-        val selection = sinceLastModifiedMillis?.let {
-            "${MediaStore.MediaColumns.DATE_MODIFIED} >= ?"
-        }
-        val selectionArgs = sinceLastModifiedMillis?.let {
-            arrayOf((it.coerceAtLeast(0L) / MILLIS_PER_SECOND).toString())
-        }
+        val window = createMediaStoreScanWindow(sinceLastModifiedMillis, scanBoundaryMillis)
+        val selection = window.selection
+        val selectionArgs = window.selectionArgs
         val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} ASC, ${MediaStore.MediaColumns._ID} ASC"
 
         contentResolver.query(
@@ -83,7 +133,7 @@ class MediaStoreScanner(
             if (batch.isNotEmpty()) {
                 onBatch(batch.toList())
             }
-        }
+        } ?: error("MediaStore 查询未返回 Cursor: $collectionUri")
     }
 
     private fun projectionFor(isVideo: Boolean): Array<String> {
@@ -114,7 +164,9 @@ class MediaStoreScanner(
         if (id < 0L) return null
 
         val uri = ContentUris.withAppendedId(collectionUri, id)
-        val lastModifiedMillis = secondsToMillis(longOrNull(MediaStore.MediaColumns.DATE_MODIFIED) ?: 0L)
+        val lastModifiedMillis = mediaStoreSecondsToMillis(
+            longOrNull(MediaStore.MediaColumns.DATE_MODIFIED) ?: 0L,
+        )
         val takenAtMillis = longOrNull(MediaStore.MediaColumns.DATE_TAKEN)
             ?.takeIf { it > 0L }
             ?: lastModifiedMillis
@@ -160,14 +212,27 @@ class MediaStoreScanner(
         return if (index >= 0 && !isNull(index)) getString(index) else null
     }
 
-    private fun secondsToMillis(seconds: Long): Long {
-        return seconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / MILLIS_PER_SECOND) * MILLIS_PER_SECOND
-    }
-
     private companion object {
         const val DEFAULT_BATCH_SIZE = 100
-        const val MILLIS_PER_SECOND = 1_000L
         const val DEGREES_IN_CIRCLE = 360
         const val HAS_GAIN_MAP_COLUMN = "has_gain_map"
     }
 }
+
+internal data class MediaStoreScanWindow(val selection: String?, val selectionArgs: Array<String>)
+
+internal fun createMediaStoreScanWindow(sinceLastModifiedMillis: Long?, scanBoundaryMillis: Long): MediaStoreScanWindow {
+    val upper = (scanBoundaryMillis.coerceAtLeast(0L) / MILLIS_PER_SECOND).toString()
+    if (sinceLastModifiedMillis == null) {
+        return MediaStoreScanWindow(
+            "${MediaStore.MediaColumns.DATE_MODIFIED} < ?",
+            arrayOf(upper),
+        )
+    }
+    return MediaStoreScanWindow(
+        "${MediaStore.MediaColumns.DATE_MODIFIED} >= ? AND ${MediaStore.MediaColumns.DATE_MODIFIED} < ?",
+        arrayOf((sinceLastModifiedMillis.coerceAtLeast(0L) / MILLIS_PER_SECOND).toString(), upper),
+    )
+}
+
+private const val MILLIS_PER_SECOND = 1_000L

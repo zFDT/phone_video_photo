@@ -10,7 +10,7 @@
 - 目标设备：Redmi K70 Pro（ALSC，1 TB）。
 - 本地媒体分析方向：规则评分、ML Kit、MediaPipe Image Embedder、可插拔 LiteRT 模型。
 - 任务 2 的领域模型和 Room 数据层基础文件。
-- 暂不包含真实媒体扫描、视频采样、导出和相册整理业务。
+- 已包含 MediaStore 媒体索引 MVP、权限入口、Photo Picker 入口和 Room 索引持久化；视频采样、导出和相册整理仍待后续任务实现。
 
 ## 版本控制约定
 
@@ -31,7 +31,7 @@
 
 当前项目已接入 Gradle 8.13 Wrapper，并补齐 Room + KSP、WorkManager、Media3、ML Kit、MediaPipe、ExifInterface 等依赖。Gradle 8.13 distribution 已存在于本机缓存；项目同时配置了 Maven Central、Google Maven 和阿里云公共镜像。
 
-验证结果：`:app:kspDebugKotlin` 和完整 `:app:assembleDebug :app:testDebugUnitTest` 均已在离线模式下成功通过。最近一次构建执行了 45 个任务，其中 15 个实际执行、30 个复用缓存。之前的失败分别来自 Manifest 主题资源、Room/KSP 注解读取和 MediaStore/Room API 使用错误，均已修正。
+验证结果：`:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已在离线模式下成功通过（56 个任务，14 个实际执行、42 个复用缓存）。当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
 首个验证命令为：
 
@@ -52,3 +52,4 @@
 - `31770f2 chore: initialize mvp foundation`：规格、计划、项目骨架、基础 Room 数据层和版本控制配置。
 - `bf3f84b feat: add media domain and room data layer`：应用模块配置和领域模型测试。
 - `94d48cd feat: 添加媒体扫描和访问功能，支持媒体索引和权限管理`：MediaStore 扫描、增量索引状态和 URI 访问封装。
+- 任务 3 的 UI、增量边界修复和 AndroidTest 已通过上述验证，待本阶段提交后补充 commit 记录。
