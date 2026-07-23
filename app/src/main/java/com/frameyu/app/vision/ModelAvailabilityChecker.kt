@@ -60,7 +60,7 @@ class ModelAvailabilityChecker(
                     mapMlKitException(error)
                 } catch (error: Exception) {
                     VisionModelProbeResult.LoadFailed(
-                        error.message ?: "ML Kit 人脸模型初始化失败",
+                        error.message?.ifBlank { null } ?: "ML Kit 人脸模型初始化失败",
                     )
                 }
             }

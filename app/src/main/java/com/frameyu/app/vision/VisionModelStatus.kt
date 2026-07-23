@@ -3,6 +3,8 @@ package com.frameyu.app.vision
 /** 当前本地视觉模型的类型。 */
 enum class VisionModel {
     FaceDetection,
+    ImageLabeling,
+    ImageEmbedding,
 }
 
 /** 模型可用性必须显式区分，避免把模型未就绪误判为空结果。 */
