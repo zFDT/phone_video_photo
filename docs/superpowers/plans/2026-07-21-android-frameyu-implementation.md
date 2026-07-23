@@ -225,7 +225,7 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 
 当前进度：已完成缩略图约束、ML Kit 标签适配器、向量数据模型和 MediaPipe Embedder 适配器；默认 `.task` 模型资产尚未纳入项目，因此本步骤保持未完成。
 
-- [ ] **步骤 4：实现分析管线**
+- [x] **步骤 4：实现分析管线**
 
 串联规则评分、视觉模型和可选模型，单个模型失败时保留其他结果并记录可诊断错误。
 
@@ -234,6 +234,8 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 运行：`./gradlew :app:testDebugUnitTest --tests '*AnalyzerPipelineTest'`
 
 预期：模型不可用、空结果和部分失败场景都有明确状态，不会被误判为“没有精彩帧”。
+
+验证记录：`./gradlew.bat --offline :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功执行；延迟模型失败场景已加入 instrumentation 测试，真实设备运行待连接 Redmi K70 Pro。
 
 ## 任务 6：实现视频采样和长任务调度
 
