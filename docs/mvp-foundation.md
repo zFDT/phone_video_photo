@@ -17,6 +17,7 @@
 - 已完成视频自适应采样计划第一阶段：三档采样密度、最长 2 小时、半开区间覆盖、断点恢复；Media3 解码器、音频特征和 WorkManager 长任务仍待实现。
 - 已完成视频帧采样器第一阶段：支持 MediaItem/Uri 输入、按计划读取帧、去重、取消和失败状态；音频分析与长任务调度仍待实现。
 - 已完成音频摘要特征分析第一阶段：根据能量、频谱变化和节奏变化生成并合并重点区间，不保存音频副本；实际音轨读取仍待接入。
+- 已完成可恢复视频分析任务核心：按采样区间逐帧回调，逐帧保存下一时间点、区间索引和累计进度；任务核心不持有 Bitmap、解码器或音频副本，可供 WorkManager 调度层接入。
 
 ## 版本控制约定
 
@@ -38,6 +39,8 @@
 当前项目已接入 Gradle 8.13 Wrapper，并补齐 Room + KSP、WorkManager、Media3、ML Kit、MediaPipe、ExifInterface 等依赖。Gradle 8.13 distribution 已存在于本机缓存；项目同时配置了 Maven Central、Google Maven 和阿里云公共镜像。
 
 验证结果：`:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已在离线模式下成功通过（56 个任务，14 个实际执行、42 个复用缓存）。当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
+
+最近验证：`./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoAnalysisTaskTest` 已成功通过，覆盖完整区间、断点续采和回调失败进度保留。
 
 首个验证命令为：
 
