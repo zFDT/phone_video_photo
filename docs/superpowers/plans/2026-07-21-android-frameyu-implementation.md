@@ -189,23 +189,25 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 
 ## 任务 4：建立分析接口和基础画质评分
 
-- [ ] **步骤 1：写评分器测试**
+- [x] **步骤 1：写评分器测试**
 
 测试清晰度、曝光、黑帧、重复帧和权重合成；确保分数始终处于 0～100。
 
-- [ ] **步骤 2：实现 `FrameAnalyzer` 接口**
+- [x] **步骤 2：实现 `FrameAnalyzer` 接口**
 
 接口接收 `FrameSample` 和分析上下文，返回 `FrameScore`，不依赖 Android UI。
 
-- [ ] **步骤 3：实现规则评分器和场景切换检测**
+- [x] **步骤 3：实现规则评分器和场景切换检测**
 
 使用图像灰度差、边缘强度和时间邻近关系实现首版算法；将每项分数保留，便于后续调参。
 
-- [ ] **步骤 4：运行单元测试**
+- [x] **步骤 4：运行单元测试**
 
 运行：`./gradlew :app:testDebugUnitTest --tests '*QualityScorerTest' --tests '*SceneChangeDetectorTest'`
 
 预期：所有评分边界、空帧和相邻重复帧测试通过。
+
+验证记录：`./gradlew.bat --offline :app:testDebugUnitTest :app:assembleDebug` 已成功执行。规则分析器不依赖 Android UI 或新增依赖，真实 ML Kit/MediaPipe 模型接入归入任务 5。
 
 ## 任务 5：接入本地视觉模型
 

@@ -11,6 +11,7 @@
 - 本地媒体分析方向：规则评分、ML Kit、MediaPipe Image Embedder、可插拔 LiteRT 模型。
 - 任务 2 的领域模型和 Room 数据层基础文件。
 - 已包含 MediaStore 媒体索引 MVP、权限入口、Photo Picker 入口和 Room 索引持久化；视频采样、导出和相册整理仍待后续任务实现。
+- 已完成首版精彩帧规则分析接口：支持清晰度、曝光、黑帧、重复帧和场景变化评分，后续可替换为 ML Kit/LiteRT 实现。
 
 ## 版本控制约定
 
@@ -53,3 +54,4 @@
 - `bf3f84b feat: add media domain and room data layer`：应用模块配置和领域模型测试。
 - `94d48cd feat: 添加媒体扫描和访问功能，支持媒体索引和权限管理`：MediaStore 扫描、增量索引状态和 URI 访问封装。
 - 任务 3 的 UI、增量边界修复和 AndroidTest 已通过上述验证，待本阶段提交后补充 commit 记录。
+- 任务 4 的纯 Kotlin 评分器和单元测试已通过 `:app:testDebugUnitTest :app:assembleDebug`，尚未接入真实视觉模型。
