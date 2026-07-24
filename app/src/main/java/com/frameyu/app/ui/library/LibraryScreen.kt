@@ -34,6 +34,7 @@ fun LibraryScreen(
     onRequestMediaReadPermission: () -> Unit = {},
     onSelectMedia: () -> Unit = {},
     onStartAnalysis: (MediaAssetEntity) -> Unit = {},
+    onOpenCandidates: (MediaAssetEntity) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val isScanning = uiState.scanState is MediaScanState.Scanning
@@ -91,6 +92,7 @@ fun LibraryScreen(
                         video = video,
                         task = uiState.analysisTasks[video.id],
                         onStartAnalysis = { onStartAnalysis(video) },
+                        onOpenCandidates = { onOpenCandidates(video) },
                     )
                 }
             }
@@ -131,6 +133,7 @@ private fun VideoAnalysisRow(
     video: MediaAssetEntity,
     task: AnalysisTaskEntity?,
     onStartAnalysis: () -> Unit,
+    onOpenCandidates: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -158,11 +161,15 @@ private fun VideoAnalysisRow(
                     )
                 }
             }
-            Button(
-                onClick = onStartAnalysis,
-                enabled = task?.status != "QUEUED" && task?.status != "RUNNING",
-            ) {
-                Text(text = analysisActionText(task?.status))
+            if (task?.status == "COMPLETED") {
+                Button(onClick = onOpenCandidates) { Text(text = "查看候选帧") }
+            } else {
+                Button(
+                    onClick = onStartAnalysis,
+                    enabled = task?.status != "QUEUED" && task?.status != "RUNNING",
+                ) {
+                    Text(text = analysisActionText(task?.status))
+                }
             }
         }
     }

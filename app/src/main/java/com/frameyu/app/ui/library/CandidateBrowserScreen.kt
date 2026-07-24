@@ -1,0 +1,164 @@
+package com.frameyu.app.ui.library
+
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.frameyu.app.data.db.AnalysisCandidateEntity
+import com.frameyu.app.data.db.FrameYuDatabase
+import com.frameyu.app.data.db.MediaAssetEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+@Composable
+fun CandidateBrowserScreen(
+    media: MediaAssetEntity,
+    database: FrameYuDatabase,
+    onBack: () -> Unit,
+) {
+    val candidates by database.analysisCandidateDao()
+        .observeByMediaAssetId(media.id)
+        .collectAsState(initial = emptyList())
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(onClick = onBack) { Text(text = "返回") }
+            Text(text = "精彩帧候选", style = MaterialTheme.typography.titleLarge)
+            Text(text = "${candidates.size} 帧")
+        }
+        Text(
+            text = media.uri.substringAfterLast('/'),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+        )
+        if (candidates.isEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(text = "暂时没有候选帧")
+                Text(text = "请先完成一次视频分析。", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                items(candidates, key = AnalysisCandidateEntity::id) { candidate ->
+                    CandidateRow(media, candidate)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CandidateRow(media: MediaAssetEntity, candidate: AnalysisCandidateEntity) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        CandidatePreview(
+            uri = media.uri,
+            timestampMillis = candidate.timestampMillis,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(text = formatCandidateTimestamp(candidate.timestampMillis))
+            Text(text = "评分 ${candidate.score}")
+        }
+        Text(
+            text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun CandidatePreview(uri: String, timestampMillis: Long) {
+    val context = LocalContext.current
+    val bitmap by produceState<Bitmap?>(initialValue = null, uri, timestampMillis) {
+        value = withContext(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, Uri.parse(uri))
+                retriever.getFrameAtTime(
+                    timestampMillis * 1_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
+                )?.let { source ->
+                    val maxEdge = maxOf(source.width, source.height)
+                    if (maxEdge <= 1_024) source else {
+                        val scale = 1_024f / maxEdge
+                        Bitmap.createScaledBitmap(
+                            source,
+                            (source.width * scale).toInt().coerceAtLeast(1),
+                            (source.height * scale).toInt().coerceAtLeast(1),
+                            true,
+                        ).also { source.recycle() }
+                    }
+                }
+            } finally {
+                retriever.release()
+            }
+        }
+        awaitDispose { value?.recycle() }
+    }
+
+    if (bitmap == null) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(180.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+    } else {
+        Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = "${formatCandidateTimestamp(timestampMillis)} 候选帧",
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+internal fun formatCandidateTimestamp(timestampMillis: Long): String {
+    val safeMillis = timestampMillis.coerceAtLeast(0L)
+    val totalSeconds = safeMillis / 1_000L
+    return "%02d:%02d.%03d".format(
+        totalSeconds / 60,
+        totalSeconds % 60,
+        safeMillis % 1_000L,
+    )
+}

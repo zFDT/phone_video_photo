@@ -2,7 +2,6 @@ package com.frameyu.app
 
 import android.os.Bundle
 import android.Manifest
-import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
@@ -22,6 +21,8 @@ import androidx.compose.runtime.setValue
 import com.frameyu.app.data.media.MediaUriAccess
 import com.frameyu.app.ui.library.LibraryScreen
 import com.frameyu.app.ui.library.LibraryViewModel
+import com.frameyu.app.ui.library.CandidateBrowserScreen
+import com.frameyu.app.data.db.MediaAssetEntity
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     }
     private val mediaUriAccess by lazy { MediaUriAccess(this) }
     private var hasMediaPermission = mutableStateOf(false)
+    private var selectedCandidateMedia = mutableStateOf<MediaAssetEntity?>(null)
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission() }
@@ -54,15 +56,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    LibraryScreen(
-                        viewModel = libraryViewModel,
-                        onStartAnalysis = libraryViewModel::startVideoAnalysis,
-                        hasMediaReadPermission = hasMediaPermission.value,
-                        onRequestMediaReadPermission = ::requestMediaReadPermission,
-                        onSelectMedia = {
-                            pickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                        },
-                    )
+                    val candidateMedia = selectedCandidateMedia.value
+                    if (candidateMedia == null) {
+                        LibraryScreen(
+                            viewModel = libraryViewModel,
+                            onStartAnalysis = libraryViewModel::startVideoAnalysis,
+                            onOpenCandidates = { selectedCandidateMedia.value = it },
+                            hasMediaReadPermission = hasMediaPermission.value,
+                            onRequestMediaReadPermission = ::requestMediaReadPermission,
+                            onSelectMedia = {
+                                pickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                            },
+                        )
+                    } else {
+                        CandidateBrowserScreen(
+                            media = candidateMedia,
+                            database = (application as FrameYuApplication).database,
+                            onBack = { selectedCandidateMedia.value = null },
+                        )
+                    }
                 }
             }
         }
