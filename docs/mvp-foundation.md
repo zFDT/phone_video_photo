@@ -19,6 +19,7 @@
 - 已完成音频摘要特征分析第一阶段：根据能量、频谱变化和节奏变化生成并合并重点区间，不保存音频副本；实际音轨读取仍待接入。
 - 已完成可恢复视频分析任务核心：按采样区间逐帧回调，逐帧保存下一时间点、区间索引和累计进度；任务核心不持有 Bitmap、解码器或音频副本，可供 WorkManager 调度层接入。
 - 已完成分析断点的 Room 持久化适配：分析任务表升级到 v2，保存计划 ID、区间索引、下一时间点和累计帧数；已补充 1→2 迁移及内存数据库 instrumentation 测试。
+- 已完成 WorkManager 前台任务与串行调度骨架：使用唯一工作链串行排队视频任务，前台通知实时报告任务进度，支持取消、失败和批量入队；真实视频分析执行器通过 `VideoAnalysisWorkerRunner` 注入，尚未接入默认实现。
 
 ## 版本控制约定
 
@@ -44,6 +45,8 @@
 最近验证：`./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoAnalysisTaskTest` 已成功通过，覆盖完整区间、断点续采和回调失败进度保留。
 
 断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；Room 迁移和实际设备数据库运行仍需在连接 Redmi K70 Pro 后执行。
+
+任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功通过；WorkManager 运行时通知和后台限制仍需在真实 Android 环境验证。
 
 首个验证命令为：
 
