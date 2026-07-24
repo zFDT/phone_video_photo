@@ -20,6 +20,9 @@ internal fun mediaStoreSecondsToMillis(seconds: Long): Long {
     return seconds.coerceAtLeast(0L).coerceAtMost(Long.MAX_VALUE / MILLIS_PER_SECOND) * MILLIS_PER_SECOND
 }
 
+internal fun shouldRetryWithoutGainMapColumn(error: Throwable): Boolean =
+    error is IllegalArgumentException && error.message?.contains("has_gain_map", ignoreCase = true) == true
+
 internal fun filterChangedMediaAssets(
     candidates: List<MediaAssetEntity>,
     existingByUri: Map<String, MediaAssetEntity>,
@@ -112,13 +115,22 @@ class MediaStoreScanner(
         val selectionArgs = window.selectionArgs
         val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} ASC, ${MediaStore.MediaColumns._ID} ASC"
 
-        contentResolver.query(
-            collectionUri,
-            projection,
-            selection,
-            selectionArgs,
-            sortOrder,
-        )?.use { cursor ->
+        val cursor = try {
+            contentResolver.query(collectionUri, projection, selection, selectionArgs, sortOrder)
+        } catch (error: IllegalArgumentException) {
+            if (!isVideo && projection.contains(HAS_GAIN_MAP_COLUMN) && shouldRetryWithoutGainMapColumn(error)) {
+                contentResolver.query(
+                    collectionUri,
+                    projection.filterNot { it == HAS_GAIN_MAP_COLUMN }.toTypedArray(),
+                    selection,
+                    selectionArgs,
+                    sortOrder,
+                )
+            } else {
+                throw error
+            }
+        }
+        cursor?.use { cursor ->
             val batch = ArrayList<MediaAssetEntity>(batchSize)
             while (cursor.moveToNext()) {
                 val asset = cursor.toMediaAssetEntity(collectionUri, isVideo)

@@ -76,6 +76,18 @@ class MediaStoreScannerTest {
         assertEquals(listOf(resized), result)
     }
 
+    @Test
+    fun retriesMediaStoreQueryWhenOptionalGainMapColumnIsUnsupported() {
+        assertEquals(
+            true,
+            shouldRetryWithoutGainMapColumn(IllegalArgumentException("Invalid column has_gain_map")),
+        )
+        assertEquals(
+            false,
+            shouldRetryWithoutGainMapColumn(IllegalArgumentException("permission denied")),
+        )
+    }
+
     private fun mediaAsset(uri: String, modified: Long, size: Long): MediaAssetEntity = MediaAssetEntity(
         id = uri.hashCode().toLong().let { if (it < 0L) -it else it },
         uri = uri,

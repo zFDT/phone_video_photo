@@ -50,6 +50,8 @@
 
 真机安装验证：2026-07-24 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片和视频读取权限；通知权限仍为未授予状态。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
 
+扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；修复后重新安装并点击全量扫描，设备显示扫描完成并更新 `10097` 个媒体。
+
 首个验证命令为：
 
 ```powershell

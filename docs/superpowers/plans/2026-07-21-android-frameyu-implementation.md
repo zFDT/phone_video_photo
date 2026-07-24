@@ -185,7 +185,7 @@ DAO 必须支持按媒体 URI 查询、按任务查询候选帧、断点保存�
 
 预期：测试设备上可以读取测试媒体元数据，未授权时显示明确的授权引导。
 
-说明：2026-07-24 已连接 Redmi K70 Pro（`23117RK66C`，Android 16）执行 `connectedDebugAndroidTest`；Room 断点和异步视觉管线测试通过，MediaStore 测试因未授予媒体读取权限跳过。
+说明：2026-07-24 已连接 Redmi K70 Pro（`23117RK66C`，Android 16）执行 `connectedDebugAndroidTest`；Room 断点和异步视觉管线测试通过，MediaStore 测试因当时未授予媒体读取权限跳过。随后手动安装 Debug APK 并执行全量扫描，修复 `has_gain_map` 兼容性后成功索引 `10097` 个媒体。
 
 ## 任务 4：建立分析接口和基础画质评分
 
