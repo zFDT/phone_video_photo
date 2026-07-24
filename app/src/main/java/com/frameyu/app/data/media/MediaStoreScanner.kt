@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import androidx.annotation.VisibleForTesting
 import com.frameyu.app.data.db.MediaAssetDao
 import com.frameyu.app.data.db.MediaAssetEntity
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -81,6 +82,8 @@ class MediaStoreScanner(
     suspend fun mediaCount(): Int = withContext(Dispatchers.IO) {
         mediaAssetDao.count()
     }
+
+    fun observeVideos(): Flow<List<MediaAssetEntity>> = mediaAssetDao.observeVideos()
 
     private fun queryCount(sinceLastModifiedMillis: Long?, scanBoundaryMillis: Long): Int {
         val window = createMediaStoreScanWindow(sinceLastModifiedMillis, scanBoundaryMillis)

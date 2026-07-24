@@ -13,8 +13,15 @@ import com.frameyu.app.sampling.VideoAnalysisWorker
 import com.frameyu.app.sampling.VideoAnalysisWorkerFactory
 import com.frameyu.app.sampling.VideoAnalysisWorkerRunner
 import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
+import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
 
 class FrameYuApplication : Application(), Configuration.Provider {
+    lateinit var database: FrameYuDatabase
+        private set
+
+    lateinit var videoAnalysisWorkScheduler: VideoAnalysisWorkScheduler
+        private set
+
     lateinit var mediaStoreRepository: MediaStoreRepository
         private set
 
@@ -30,10 +37,11 @@ class FrameYuApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         createVideoAnalysisNotificationChannel()
-        val database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
+        database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
             .addMigrations(FrameYuDatabase.MIGRATION_1_2)
             .build()
         videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database)
+        videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }
 

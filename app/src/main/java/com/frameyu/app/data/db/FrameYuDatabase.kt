@@ -11,6 +11,7 @@ import androidx.room.RoomDatabase
 import androidx.room.Dao
 import androidx.room.Upsert
 import com.frameyu.app.sampling.VideoAnalysisProgress
+import kotlinx.coroutines.flow.Flow
 
 /** 媒体资源表，字段与领域模型 MediaAsset 一一对应。 */
 @Entity(
@@ -122,6 +123,9 @@ interface AnalysisTaskDao {
 
     @Query("SELECT * FROM analysis_tasks WHERE id = :taskId LIMIT 1")
     suspend fun getTaskProgress(taskId: Long): AnalysisTaskEntity?
+
+    @Query("SELECT * FROM analysis_tasks")
+    fun observeTasks(): Flow<List<AnalysisTaskEntity>>
 
     @Query(
         """

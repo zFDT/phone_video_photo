@@ -2,8 +2,13 @@ package com.frameyu.app.ui.library
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.frameyu.app.data.db.AnalysisCandidateDao
+import com.frameyu.app.data.db.AnalysisTaskDao
+import com.frameyu.app.data.db.AnalysisTaskEntity
+import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.data.media.MediaScanState
 import com.frameyu.app.data.media.MediaStoreRepository
+import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -18,32 +24,65 @@ data class LibraryUiState(
     val scanState: MediaScanState = MediaScanState.Idle,
     val mediaCount: Int = 0,
     val indexedCount: Int = 0,
+    val videos: List<MediaAssetEntity> = emptyList(),
+    val analysisTasks: Map<Long, AnalysisTaskEntity> = emptyMap(),
 )
 
 /** 媒体库页面状态协调器，不直接接触 ContentResolver。 */
 class LibraryViewModel(
     private val repository: MediaStoreRepository,
+    private val analysisTaskDao: AnalysisTaskDao,
+    private val analysisCandidateDao: AnalysisCandidateDao,
+    private val workScheduler: VideoAnalysisWorkScheduler,
 ) : ViewModel() {
     private val _mediaCount = MutableStateFlow(0)
     private val _indexedCount = MutableStateFlow(0)
     private val scanJob = MutableStateFlow<Job?>(null)
     private var lastScanModifiedMillis: Long? = null
+    private val videos = repository.observeVideos()
+    private val analysisTasks = analysisTaskDao.observeTasks().map { tasks ->
+        tasks.associateBy { it.mediaAssetId }
+    }
 
     val uiState: StateFlow<LibraryUiState> = combine(
         repository.scanState,
         _mediaCount,
         _indexedCount,
-    ) { scanState, mediaCount, indexedCount ->
+        videos,
+        analysisTasks,
+    ) { scanState, mediaCount, indexedCount, videoAssets, tasks ->
         LibraryUiState(
             scanState = scanState,
             mediaCount = mediaCount,
             indexedCount = indexedCount,
+            videos = videoAssets,
+            analysisTasks = tasks,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = LibraryUiState(),
     )
+
+    fun startVideoAnalysis(media: MediaAssetEntity) {
+        viewModelScope.launch {
+            val current = analysisTaskDao.getTaskProgress(media.id)
+            if (current?.status == "QUEUED" || current?.status == "RUNNING") return@launch
+            analysisCandidateDao.deleteByMediaAssetId(media.id)
+            analysisTaskDao.saveTaskProgress(
+                AnalysisTaskEntity(
+                    id = media.id,
+                    mediaAssetId = media.id,
+                    status = "QUEUED",
+                    progress = 0,
+                    currentTimestampMillis = 0L,
+                    errorMessage = null,
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+            workScheduler.enqueue(media.id)
+        }
+    }
 
     /** 触发一次全量扫描。 */
     fun scanAll() {

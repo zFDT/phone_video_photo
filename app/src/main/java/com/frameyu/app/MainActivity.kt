@@ -25,11 +25,17 @@ import com.frameyu.app.ui.library.LibraryViewModel
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
-        val repository = (application as FrameYuApplication).mediaStoreRepository
+        val frameYuApplication = application as FrameYuApplication
+        val repository = frameYuApplication.mediaStoreRepository
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                LibraryViewModel(repository) as T
+                LibraryViewModel(
+                    repository = repository,
+                    analysisTaskDao = frameYuApplication.database.analysisTaskDao(),
+                    analysisCandidateDao = frameYuApplication.database.analysisCandidateDao(),
+                    workScheduler = frameYuApplication.videoAnalysisWorkScheduler,
+                ) as T
         }
     }
     private val mediaUriAccess by lazy { MediaUriAccess(this) }
@@ -50,6 +56,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     LibraryScreen(
                         viewModel = libraryViewModel,
+                        onStartAnalysis = libraryViewModel::startVideoAnalysis,
                         hasMediaReadPermission = hasMediaPermission.value,
                         onRequestMediaReadPermission = ::requestMediaReadPermission,
                         onSelectMedia = {

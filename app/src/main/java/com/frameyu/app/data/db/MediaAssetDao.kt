@@ -3,6 +3,7 @@ package com.frameyu.app.data.db
 import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
+import kotlinx.coroutines.flow.Flow
 
 /** 媒体资源的查询和批量写入接口。 */
 @Dao
@@ -18,6 +19,9 @@ interface MediaAssetDao {
 
     @Query("SELECT COUNT(*) FROM media_assets")
     suspend fun count(): Int
+
+    @Query("SELECT * FROM media_assets WHERE mime_type LIKE 'video/%' ORDER BY taken_at_millis DESC")
+    fun observeVideos(): Flow<List<MediaAssetEntity>>
 
     @Upsert
     suspend fun upsertAll(assets: List<MediaAssetEntity>)

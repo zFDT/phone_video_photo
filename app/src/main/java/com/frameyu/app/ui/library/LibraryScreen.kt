@@ -8,18 +8,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.frameyu.app.data.db.AnalysisTaskEntity
+import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.data.media.MediaScanState
+import java.util.Locale
 
 @Composable
 fun LibraryScreen(
@@ -28,6 +33,7 @@ fun LibraryScreen(
     hasMediaReadPermission: Boolean = true,
     onRequestMediaReadPermission: () -> Unit = {},
     onSelectMedia: () -> Unit = {},
+    onStartAnalysis: (MediaAssetEntity) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val isScanning = uiState.scanState is MediaScanState.Scanning
@@ -36,24 +42,22 @@ fun LibraryScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .padding(horizontal = 20.dp, vertical = 24.dp),
     ) {
-        Text(
-            text = "媒体库",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "媒体库", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(8.dp))
         Text(text = "已索引媒体数量：${uiState.mediaCount}")
-        Text(text = "提示：该数量是本地索引记录，不等同于系统相册当前数量。")
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(text = "扫描进度：${scanProgressText(uiState.scanState)}")
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(text = scanStateText(uiState.scanState))
+        Text(
+            text = "扫描进度：${scanProgressText(uiState.scanState)}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = scanStateText(uiState.scanState),
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         if (!hasMediaReadPermission) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             Text(text = "尚未获得照片和视频访问权限，无法扫描媒体库。")
             Spacer(modifier = Modifier.height(8.dp))
             Button(onClick = onRequestMediaReadPermission) {
@@ -62,11 +66,37 @@ fun LibraryScreen(
         }
 
         if (isScanning) {
-            Spacer(modifier = Modifier.height(16.dp))
-            CircularProgressIndicator()
+            Spacer(modifier = Modifier.height(12.dp))
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "视频 ${uiState.videos.size}",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (uiState.videos.isEmpty()) {
+            Text(
+                text = "扫描完成后，这里会显示可分析的视频。",
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(uiState.videos, key = MediaAssetEntity::id) { video ->
+                    VideoAnalysisRow(
+                        video = video,
+                        task = uiState.analysisTasks[video.id],
+                        onStartAnalysis = { onStartAnalysis(video) },
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -86,12 +116,82 @@ fun LibraryScreen(
                 Text(text = "增量扫描")
             }
         }
-        Spacer(modifier = Modifier.height(12.dp))
-        OutlinedButton(onClick = onSelectMedia) {
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+            onClick = onSelectMedia,
+        ) {
             Text(text = "选择媒体")
         }
     }
 }
+
+@Composable
+private fun VideoAnalysisRow(
+    video: MediaAssetEntity,
+    task: AnalysisTaskEntity?,
+    onStartAnalysis: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Text(text = videoDisplayName(video), maxLines = 1)
+        Text(
+            text = "${formatDurationMillis(video.durationMillis)} · ${video.width}×${video.height}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = analysisTaskStatusText(task?.status, task?.progress ?: 0))
+                if (!task?.errorMessage.isNullOrBlank()) {
+                    Text(
+                        text = task?.errorMessage.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Button(
+                onClick = onStartAnalysis,
+                enabled = task?.status != "QUEUED" && task?.status != "RUNNING",
+            ) {
+                Text(text = analysisActionText(task?.status))
+            }
+        }
+    }
+}
+
+internal fun formatDurationMillis(durationMillis: Long): String {
+    val totalSeconds = (durationMillis.coerceAtLeast(0L) / 1_000L)
+    return String.format(Locale.ROOT, "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+}
+
+internal fun analysisTaskStatusText(status: String?, progress: Int): String = when (status) {
+    null -> "尚未分析"
+    "QUEUED" -> "等待分析"
+    "RUNNING" -> "分析中 ${progress.coerceIn(0, 100)}%"
+    "COMPLETED" -> "分析完成"
+    "CANCELLED" -> "已取消"
+    "FAILED" -> "分析失败"
+    else -> "状态未知"
+}
+
+private fun analysisActionText(status: String?): String = when (status) {
+    "COMPLETED" -> "重新分析"
+    "FAILED", "CANCELLED" -> "重试分析"
+    "QUEUED", "RUNNING" -> "分析中"
+    else -> "开始分析"
+}
+
+private fun videoDisplayName(video: MediaAssetEntity): String =
+    video.uri.substringAfterLast('/').ifBlank { "视频 ${video.id}" }
 
 private fun scanStateText(scanState: MediaScanState): String = when (scanState) {
     MediaScanState.Idle -> "尚未开始扫描"
