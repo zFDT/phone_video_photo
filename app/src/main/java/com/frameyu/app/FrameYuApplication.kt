@@ -12,7 +12,9 @@ class FrameYuApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        val database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db").build()
+        val database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
+            .addMigrations(FrameYuDatabase.MIGRATION_1_2)
+            .build()
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }
 }

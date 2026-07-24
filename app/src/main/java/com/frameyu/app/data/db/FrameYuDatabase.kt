@@ -10,6 +10,7 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Dao
 import androidx.room.Upsert
+import com.frameyu.app.sampling.VideoAnalysisProgress
 
 /** 媒体资源表，字段与领域模型 MediaAsset 一一对应。 */
 @Entity(
@@ -103,6 +104,14 @@ data class AnalysisTaskEntity(
     val errorMessage: String?,
     @ColumnInfo(name = "updated_at_millis")
     val updatedAtMillis: Long,
+    @ColumnInfo(name = "plan_id")
+    val planId: String? = null,
+    @ColumnInfo(name = "range_index")
+    val rangeIndex: Int = 0,
+    @ColumnInfo(name = "sampled_frame_count")
+    val sampledFrameCount: Long = 0L,
+    @ColumnInfo(name = "total_sample_count")
+    val totalSampleCount: Long = 0L,
 )
 
 /** 保存和读取任务进度。 */
@@ -113,11 +122,35 @@ interface AnalysisTaskDao {
 
     @Query("SELECT * FROM analysis_tasks WHERE id = :taskId LIMIT 1")
     suspend fun getTaskProgress(taskId: Long): AnalysisTaskEntity?
+
+    @Query(
+        """
+        UPDATE analysis_tasks
+        SET progress = :progress,
+            current_timestamp_millis = :nextTimestampMillis,
+            updated_at_millis = :updatedAtMillis,
+            plan_id = :planId,
+            range_index = :rangeIndex,
+            sampled_frame_count = :sampledFrameCount,
+            total_sample_count = :totalSampleCount
+        WHERE id = :taskId
+        """
+    )
+    suspend fun saveSamplingProgress(
+        taskId: Long,
+        progress: Int,
+        nextTimestampMillis: Long,
+        updatedAtMillis: Long,
+        planId: String,
+        rangeIndex: Int,
+        sampledFrameCount: Long,
+        totalSampleCount: Long,
+    )
 }
 
 @Database(
     entities = [MediaAssetEntity::class, AnalysisCandidateEntity::class, AnalysisTaskEntity::class],
-    version = 1
+    version = 2
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -125,4 +158,38 @@ abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun analysisCandidateDao(): AnalysisCandidateDao
 
     abstract fun analysisTaskDao(): AnalysisTaskDao
+
+    companion object {
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN plan_id TEXT")
+                db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN range_index INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN sampled_frame_count INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN total_sample_count INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+    }
+}
+
+/** 将分析任务的逐帧进度持久化到 Room。 */
+class RoomSamplingCheckpointStore(
+    private val taskId: Long,
+    private val dao: AnalysisTaskDao,
+    private val nowMillis: () -> Long,
+) : com.frameyu.app.sampling.SamplingCheckpointStore {
+    override suspend fun save(progress: VideoAnalysisProgress) {
+        val percentage = if (progress.totalSampleCount == 0L) 0 else {
+            ((progress.sampledFrameCount * 100L) / progress.totalSampleCount).toInt().coerceIn(0, 100)
+        }
+        dao.saveSamplingProgress(
+            taskId = taskId,
+            progress = percentage,
+            nextTimestampMillis = progress.nextTimestampMillis,
+            updatedAtMillis = nowMillis(),
+            planId = progress.planId,
+            rangeIndex = progress.rangeIndex,
+            sampledFrameCount = progress.sampledFrameCount,
+            totalSampleCount = progress.totalSampleCount,
+        )
+    }
 }
