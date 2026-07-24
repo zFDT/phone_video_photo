@@ -10,6 +10,9 @@ interface MediaAssetDao {
     @Query("SELECT * FROM media_assets WHERE uri = :uri LIMIT 1")
     suspend fun getByUri(uri: String): MediaAssetEntity?
 
+    @Query("SELECT * FROM media_assets WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MediaAssetEntity?
+
     @Query("SELECT * FROM media_assets WHERE uri IN (:uris)")
     suspend fun getByUris(uris: List<String>): List<MediaAssetEntity>
 

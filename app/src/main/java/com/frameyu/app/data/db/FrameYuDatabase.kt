@@ -126,6 +126,22 @@ interface AnalysisTaskDao {
     @Query(
         """
         UPDATE analysis_tasks
+        SET status = :status,
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+        """
+    )
+    suspend fun updateTaskStatus(
+        taskId: Long,
+        status: String,
+        errorMessage: String?,
+        updatedAtMillis: Long,
+    )
+
+    @Query(
+        """
+        UPDATE analysis_tasks
         SET progress = :progress,
             current_timestamp_millis = :nextTimestampMillis,
             updated_at_millis = :updatedAtMillis,

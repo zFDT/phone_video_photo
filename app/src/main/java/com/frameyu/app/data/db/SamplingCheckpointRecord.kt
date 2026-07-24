@@ -1,6 +1,7 @@
 package com.frameyu.app.data.db
 
 import com.frameyu.app.sampling.VideoAnalysisProgress
+import com.frameyu.app.sampling.SamplingCheckpoint
 
 /** 分析任务断点的纯数据表示，便于 Room 和 WorkManager 共享。 */
 data class SamplingCheckpointRecord(
@@ -16,6 +17,13 @@ data class SamplingCheckpointRecord(
         nextTimestampMillis = nextTimestampMillis,
         sampledFrameCount = sampledFrameCount,
         totalSampleCount = totalSampleCount,
+    )
+
+    fun toCheckpoint(): SamplingCheckpoint = SamplingCheckpoint(
+        planId = planId,
+        rangeIndex = rangeIndex,
+        nextTimestampMillis = nextTimestampMillis,
+        sampledFrameCount = sampledFrameCount,
     )
 
     companion object {

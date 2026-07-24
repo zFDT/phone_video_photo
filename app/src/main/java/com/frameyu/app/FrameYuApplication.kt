@@ -12,6 +12,7 @@ import com.frameyu.app.data.media.MediaStoreScanner
 import com.frameyu.app.sampling.VideoAnalysisWorker
 import com.frameyu.app.sampling.VideoAnalysisWorkerFactory
 import com.frameyu.app.sampling.VideoAnalysisWorkerRunner
+import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
 
 class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var mediaStoreRepository: MediaStoreRepository
@@ -32,6 +33,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
         val database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
             .addMigrations(FrameYuDatabase.MIGRATION_1_2)
             .build()
+        videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }
 
