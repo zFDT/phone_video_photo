@@ -44,9 +44,11 @@
 
 最近验证：`./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoAnalysisTaskTest` 已成功通过，覆盖完整区间、断点续采和回调失败进度保留。
 
-断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；Room 迁移和实际设备数据库运行仍需在连接 Redmi K70 Pro 后执行。
+断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro（`23117RK66C`，Android 16，HyperOS 构建 `OS3.0.304.0.WNMCNXM`）运行 Room 断点 instrumentation 测试并通过。
 
-任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功通过；WorkManager 运行时通知、后台限制和真实视频解码性能仍需在 Redmi K70 Pro 验证。
+任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro 完成 AndroidTest，3 个测试中 2 个通过、1 个因未授予媒体读取权限跳过。WorkManager 前台通知、后台限制和真实视频解码性能仍需专项手动验证。
+
+真机安装验证：2026-07-24 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片和视频读取权限；通知权限仍为未授予状态。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
 
 首个验证命令为：
 
