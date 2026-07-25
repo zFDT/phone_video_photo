@@ -14,6 +14,15 @@ interface AnalysisCandidateDao {
     @Query("SELECT * FROM analysis_candidates WHERE media_asset_id = :mediaAssetId ORDER BY score DESC")
     fun observeByMediaAssetId(mediaAssetId: Long): Flow<List<AnalysisCandidateEntity>>
 
+    @Query(
+        """
+        UPDATE analysis_candidates
+        SET is_selected = :selected
+        WHERE id = :candidateId AND media_asset_id = :mediaAssetId
+        """
+    )
+    suspend fun setSelected(mediaAssetId: Long, candidateId: Long, selected: Boolean)
+
     @Query("DELETE FROM analysis_candidates WHERE media_asset_id = :mediaAssetId")
     suspend fun deleteByMediaAssetId(mediaAssetId: Long)
 

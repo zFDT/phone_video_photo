@@ -16,11 +16,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -30,6 +35,7 @@ import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -41,6 +47,10 @@ fun CandidateBrowserScreen(
     val candidates by database.analysisCandidateDao()
         .observeByMediaAssetId(media.id)
         .collectAsState(initial = emptyList())
+    val scope = rememberCoroutineScope()
+    var sortByScore by rememberSaveable { mutableStateOf(true) }
+    val sortedCandidates = sortCandidates(candidates, sortByScore)
+    val selectedCount = candidates.count { it.isSelected }
 
     Column(
         modifier = Modifier
@@ -54,13 +64,24 @@ fun CandidateBrowserScreen(
         ) {
             Button(onClick = onBack) { Text(text = "返回") }
             Text(text = "精彩帧候选", style = MaterialTheme.typography.titleLarge)
-            Text(text = "${candidates.size} 帧")
+            Text(text = "${candidates.size} 帧 · 已选 $selectedCount")
         }
         Text(
             text = media.uri.substringAfterLast('/'),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = { sortByScore = true }, enabled = !sortByScore) {
+                Text(text = "按评分")
+            }
+            TextButton(onClick = { sortByScore = false }, enabled = sortByScore) {
+                Text(text = "按时间")
+            }
+        }
         if (candidates.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize(),
@@ -75,8 +96,16 @@ fun CandidateBrowserScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                items(candidates, key = AnalysisCandidateEntity::id) { candidate ->
-                    CandidateRow(media, candidate)
+                items(sortedCandidates, key = AnalysisCandidateEntity::id) { candidate ->
+                    CandidateRow(
+                        media = media,
+                        candidate = candidate,
+                        onSelectionChanged = { selected ->
+                            scope.launch {
+                                database.analysisCandidateDao().setSelected(media.id, candidate.id, selected)
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -84,7 +113,11 @@ fun CandidateBrowserScreen(
 }
 
 @Composable
-private fun CandidateRow(media: MediaAssetEntity, candidate: AnalysisCandidateEntity) {
+private fun CandidateRow(
+    media: MediaAssetEntity,
+    candidate: AnalysisCandidateEntity,
+    onSelectionChanged: (Boolean) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         CandidatePreview(
             uri = media.uri,
@@ -97,11 +130,23 @@ private fun CandidateRow(media: MediaAssetEntity, candidate: AnalysisCandidateEn
             Text(text = formatCandidateTimestamp(candidate.timestampMillis))
             Text(text = "评分 ${candidate.score}")
         }
+        Button(onClick = { onSelectionChanged(!candidate.isSelected) }) {
+            Text(text = if (candidate.isSelected) "取消选择" else "选择此帧")
+        }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,
         )
     }
+}
+
+internal fun sortCandidates(
+    candidates: List<AnalysisCandidateEntity>,
+    sortByScore: Boolean,
+): List<AnalysisCandidateEntity> = if (sortByScore) {
+    candidates.sortedWith(compareByDescending<AnalysisCandidateEntity> { it.score }.thenBy { it.timestampMillis })
+} else {
+    candidates.sortedBy { it.timestampMillis }
 }
 
 @Composable
