@@ -36,6 +36,7 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.StillImageFormat
+import com.frameyu.app.export.VideoClipExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,6 +46,7 @@ fun CandidateBrowserScreen(
     media: MediaAssetEntity,
     database: FrameYuDatabase,
     exporter: StillImageExporter,
+    clipExporter: VideoClipExporter,
     onBack: () -> Unit,
 ) {
     val candidates by database.analysisCandidateDao()
@@ -130,6 +132,16 @@ fun CandidateBrowserScreen(
                                 }
                             }
                         },
+                        onExportMp4 = {
+                            scope.launch {
+                                exportMessage = try {
+                                    clipExporter.exportCandidate(media, candidate)
+                                    "已导出 MP4 ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                } catch (error: Throwable) {
+                                    "导出失败：${error.message ?: "未知错误"}"
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -144,6 +156,7 @@ private fun CandidateRow(
     onSelectionChanged: (Boolean) -> Unit,
     onExport: () -> Unit,
     onExportWebp: () -> Unit,
+    onExportMp4: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         CandidatePreview(
@@ -162,6 +175,7 @@ private fun CandidateRow(
         }
         Button(onClick = onExport) { Text(text = "导出图片") }
         Button(onClick = onExportWebp) { Text(text = "导出 WebP") }
+        Button(onClick = onExportMp4) { Text(text = "导出 3 秒 MP4") }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,
