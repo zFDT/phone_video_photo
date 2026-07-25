@@ -22,6 +22,12 @@ class CandidatePresentationTest {
         assertEquals(listOf(2L, 1L), sortCandidates(candidates, sortByScore = false).map { it.id })
     }
 
+    @Test
+    fun `动态导出时长显示为秒`() {
+        assertEquals("3 秒", formatDurationSeconds(3_000L))
+        assertEquals("10 秒", formatDurationSeconds(10_000L))
+    }
+
     private fun candidate(id: Long, timestampMillis: Long, score: Int) = AnalysisCandidateEntity(
         id = id,
         mediaAssetId = 10L,

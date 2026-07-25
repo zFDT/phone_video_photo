@@ -56,6 +56,7 @@ fun CandidateBrowserScreen(
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var sortByScore by rememberSaveable { mutableStateOf(true) }
+    var clipDurationMillis by rememberSaveable { mutableStateOf(3_000L) }
     var exportMessage by rememberSaveable { mutableStateOf<String?>(null) }
     val sortedCandidates = sortCandidates(candidates, sortByScore)
     val selectedCount = candidates.count { it.isSelected }
@@ -91,6 +92,21 @@ fun CandidateBrowserScreen(
                 Text(text = "按时间")
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = "动态时长")
+            listOf(3_000L, 5_000L, 10_000L).forEach { durationMillis ->
+                TextButton(
+                    onClick = { clipDurationMillis = durationMillis },
+                    enabled = clipDurationMillis != durationMillis,
+                ) {
+                    Text(text = formatDurationSeconds(durationMillis))
+                }
+            }
+        }
         if (candidates.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize(),
@@ -109,6 +125,7 @@ fun CandidateBrowserScreen(
                     CandidateRow(
                         media = media,
                         candidate = candidate,
+                        clipDurationMillis = clipDurationMillis,
                         onSelectionChanged = { selected ->
                             scope.launch {
                                 database.analysisCandidateDao().setSelected(media.id, candidate.id, selected)
@@ -137,8 +154,8 @@ fun CandidateBrowserScreen(
                         onExportMp4 = {
                             scope.launch {
                                 exportMessage = try {
-                                    clipExporter.exportCandidate(media, candidate)
-                                    "已导出 MP4 ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                    clipExporter.exportCandidate(media, candidate, clipDurationMillis)
+                                    "已导出 ${formatDurationSeconds(clipDurationMillis)} MP4 ${formatCandidateTimestamp(candidate.timestampMillis)}"
                                 } catch (error: Throwable) {
                                     "导出失败：${error.message ?: "未知错误"}"
                                 }
@@ -147,8 +164,8 @@ fun CandidateBrowserScreen(
                         onExportGif = {
                             scope.launch {
                                 exportMessage = try {
-                                    gifExporter.exportCandidate(media, candidate)
-                                    "已导出 GIF ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                    gifExporter.exportCandidate(media, candidate, clipDurationMillis)
+                                    "已导出 ${formatDurationSeconds(clipDurationMillis)} GIF ${formatCandidateTimestamp(candidate.timestampMillis)}"
                                 } catch (error: Throwable) {
                                     "导出失败：${error.message ?: "未知错误"}"
                                 }
@@ -165,6 +182,7 @@ fun CandidateBrowserScreen(
 private fun CandidateRow(
     media: MediaAssetEntity,
     candidate: AnalysisCandidateEntity,
+    clipDurationMillis: Long,
     onSelectionChanged: (Boolean) -> Unit,
     onExport: () -> Unit,
     onExportWebp: () -> Unit,
@@ -188,7 +206,7 @@ private fun CandidateRow(
         }
         Button(onClick = onExport) { Text(text = "导出图片") }
         Button(onClick = onExportWebp) { Text(text = "导出 WebP") }
-        Button(onClick = onExportMp4) { Text(text = "导出 3 秒 MP4") }
+        Button(onClick = onExportMp4) { Text(text = "导出 ${formatDurationSeconds(clipDurationMillis)} MP4") }
         Button(onClick = onExportGif) { Text(text = "导出 GIF") }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
@@ -264,3 +282,6 @@ internal fun formatCandidateTimestamp(timestampMillis: Long): String {
         safeMillis % 1_000L,
     )
 }
+
+internal fun formatDurationSeconds(durationMillis: Long): String =
+    "${durationMillis.coerceAtLeast(0L) / 1_000L} 秒"
