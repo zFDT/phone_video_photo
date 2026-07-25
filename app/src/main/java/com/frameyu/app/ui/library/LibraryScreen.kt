@@ -35,11 +35,13 @@ fun LibraryScreen(
     onSelectMedia: () -> Unit = {},
     onStartAnalysis: (MediaAssetEntity) -> Unit = {},
     onStartBatchAnalysis: () -> Unit = {},
+    onCancelBatchAnalysis: () -> Unit = {},
     onOpenCandidates: (MediaAssetEntity) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val isScanning = uiState.scanState is MediaScanState.Scanning
     val canScan = hasMediaReadPermission && !isScanning
+    val taskSummary = analysisTaskSummary(uiState.analysisTasks.values)
 
     Column(
         modifier = modifier
@@ -77,12 +79,27 @@ fun LibraryScreen(
             text = "视频 ${uiState.videos.size}",
             style = MaterialTheme.typography.titleMedium,
         )
+        if (taskSummary.total > 0) {
+            Text(
+                text = "分析任务：${taskSummary.completed}/${taskSummary.total} 完成" +
+                    " · ${taskSummary.running + taskSummary.queued} 排队/进行中",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (uiState.videos.any { uiState.analysisTasks[it.id]?.status !in setOf("QUEUED", "RUNNING", "COMPLETED") }) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = onStartBatchAnalysis,
             ) {
                 Text(text = "批量分析未完成视频")
+            }
+        }
+        if (taskSummary.running + taskSummary.queued > 0) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onCancelBatchAnalysis,
+            ) {
+                Text(text = "取消当前批量分析")
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -136,6 +153,21 @@ fun LibraryScreen(
         }
     }
 }
+
+internal data class AnalysisTaskSummary(
+    val total: Int,
+    val queued: Int,
+    val running: Int,
+    val completed: Int,
+)
+
+internal fun analysisTaskSummary(tasks: Collection<AnalysisTaskEntity>): AnalysisTaskSummary =
+    AnalysisTaskSummary(
+        total = tasks.size,
+        queued = tasks.count { it.status == "QUEUED" },
+        running = tasks.count { it.status == "RUNNING" },
+        completed = tasks.count { it.status == "COMPLETED" },
+    )
 
 @Composable
 private fun VideoAnalysisRow(

@@ -38,7 +38,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
         super.onCreate()
         createVideoAnalysisNotificationChannel()
         database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
-            .addMigrations(FrameYuDatabase.MIGRATION_1_2)
+            .addMigrations(FrameYuDatabase.MIGRATION_1_2, FrameYuDatabase.MIGRATION_2_3)
             .build()
         videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database)
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)

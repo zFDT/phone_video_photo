@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -28,6 +29,7 @@ import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
                             viewModel = libraryViewModel,
                             onStartAnalysis = libraryViewModel::startVideoAnalysis,
                             onStartBatchAnalysis = libraryViewModel::startBatchVideoAnalysis,
+                            onCancelBatchAnalysis = libraryViewModel::cancelBatchVideoAnalysis,
                             onOpenCandidates = { selectedCandidateMedia.value = it },
                             hasMediaReadPermission = hasMediaPermission.value,
                             onRequestMediaReadPermission = ::requestMediaReadPermission,
@@ -85,12 +88,21 @@ class MainActivity : ComponentActivity() {
                                 clipExporter = VideoClipExporter(this@MainActivity),
                                 gifExporter = GifExporter(this@MainActivity),
                                 onOpenDetail = { selectedCandidate.value = it },
-                                onBack = { selectedCandidateMedia.value = null },
+                                onBack = {
+                                    selectedCandidate.value = null
+                                    selectedCandidateMedia.value = null
+                                },
                             )
                         } else {
                             CandidateDetailScreen(
                                 media = candidateMedia,
                                 candidate = candidate,
+                                onSetCover = {
+                                    lifecycleScope.launch {
+                                        (application as FrameYuApplication).database.analysisCandidateDao()
+                                            .setCover(candidateMedia.id, candidate.id)
+                                    }
+                                },
                                 onBack = { selectedCandidate.value = null },
                             )
                         }

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,9 +37,11 @@ import kotlinx.coroutines.withContext
 fun CandidateDetailScreen(
     media: MediaAssetEntity,
     candidate: AnalysisCandidateEntity,
+    onSetCover: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     var currentMillis by rememberSaveable { mutableStateOf(candidate.timestampMillis) }
+    var isCover by rememberSaveable { mutableStateOf(candidate.isCover) }
     val normalized = CandidateTimeline.normalizeTime(currentMillis, media.durationMillis)
     val frameTimestamps = CandidateTimeline.frameTimestamps(
         durationMillis = media.durationMillis,
@@ -96,6 +99,15 @@ fun CandidateDetailScreen(
             text = "候选评分明细：清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,
         )
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                onSetCover()
+                isCover = true
+            },
+        ) {
+            Text(text = if (isCover) "已设为封面帧" else "设为封面帧")
+        }
     }
 }
 

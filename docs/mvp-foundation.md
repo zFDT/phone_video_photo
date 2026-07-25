@@ -31,6 +31,8 @@
 - 已修复 Android 16/targetSdk 35 前台服务崩溃：WorkManager 分析任务声明并使用 `dataSync` 前台服务类型；媒体库新增批量分析未完成视频入口，任务仍按唯一工作链串行执行。
 - 已优化候选帧第一阶段交互：改为两列网格，卡片点击切换选中状态，支持全选、清空、选择最高分 5 帧，并通过底部操作栏批量导出图片/GIF/MP4。
 - 已接入候选帧详情第一阶段：支持从候选网格进入详情，按时间轴拖动定位，并以 30 FPS 进行上一帧/下一帧定位；导出流程开始复制可用的拍摄时间、宽高和旋转元数据，缺失 GPS 不会伪造。
+- 已补齐候选帧封面帧持久化：数据库升级到 v3，按视频原子地维护唯一封面帧，详情页支持将当前候选设为封面；批量分析页显示完成/排队/运行汇总，并支持取消当前串行分析链后重试。
+- WorkManager 调度器支持按任务取消、状态查询和恢复排队；由于 WorkManager 2.11 的 `WorkInfo` 不暴露输入数据，任务 ID 同步写入请求 Tag 用于本地状态关联。
 
 ## 版本控制约定
 
@@ -51,7 +53,7 @@
 
 当前项目已接入 Gradle 8.13 Wrapper，并补齐 Room + KSP、WorkManager、Media3、ML Kit、MediaPipe、ExifInterface 等依赖。Gradle 8.13 distribution 已存在于本机缓存；项目同时配置了 Maven Central、Google Maven 和阿里云公共镜像。
 
-验证结果：`:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已在离线模式下成功通过（56 个任务，14 个实际执行、42 个复用缓存）。当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
+验证结果：`:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已在离线模式下成功通过。当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
 最近验证：`./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoAnalysisTaskTest` 已成功通过，覆盖完整区间、断点续采和回调失败进度保留。
 

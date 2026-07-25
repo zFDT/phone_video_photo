@@ -78,6 +78,17 @@ class LibraryViewModel(
         }
     }
 
+    /** 取消当前串行分析链，并将排队/运行中的任务标记为可重试。 */
+    fun cancelBatchVideoAnalysis() {
+        viewModelScope.launch {
+            workScheduler.cancelAll()
+            analysisTaskDao.cancelActiveTasks(
+                errorMessage = "用户取消分析",
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
     private suspend fun queueVideoAnalysis(media: MediaAssetEntity) {
         val current = analysisTaskDao.getTaskProgress(media.id)
         if (current?.status == "QUEUED" || current?.status == "RUNNING") return

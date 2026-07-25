@@ -77,6 +77,8 @@ data class AnalysisCandidateEntity(
     val thumbnailPath: String?,
     @ColumnInfo(name = "is_selected")
     val isSelected: Boolean,
+    @ColumnInfo(name = "is_cover")
+    val isCover: Boolean = false,
 )
 
 /** 分析任务表，状态使用字符串保存以避免 Room 类型转换依赖。 */
@@ -146,6 +148,17 @@ interface AnalysisTaskDao {
     @Query(
         """
         UPDATE analysis_tasks
+        SET status = 'CANCELLED',
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE status IN ('QUEUED', 'RUNNING')
+        """
+    )
+    suspend fun cancelActiveTasks(errorMessage: String?, updatedAtMillis: Long)
+
+    @Query(
+        """
+        UPDATE analysis_tasks
         SET progress = :progress,
             current_timestamp_millis = :nextTimestampMillis,
             updated_at_millis = :updatedAtMillis,
@@ -170,7 +183,7 @@ interface AnalysisTaskDao {
 
 @Database(
     entities = [MediaAssetEntity::class, AnalysisCandidateEntity::class, AnalysisTaskEntity::class],
-    version = 2
+    version = 3
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -186,6 +199,12 @@ abstract class FrameYuDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN range_index INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN sampled_frame_count INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE analysis_tasks ADD COLUMN total_sample_count INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE analysis_candidates ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0")
             }
         }
     }
