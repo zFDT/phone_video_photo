@@ -34,6 +34,7 @@ fun LibraryScreen(
     onRequestMediaReadPermission: () -> Unit = {},
     onSelectMedia: () -> Unit = {},
     onStartAnalysis: (MediaAssetEntity) -> Unit = {},
+    onStartBatchAnalysis: () -> Unit = {},
     onOpenCandidates: (MediaAssetEntity) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -76,6 +77,14 @@ fun LibraryScreen(
             text = "视频 ${uiState.videos.size}",
             style = MaterialTheme.typography.titleMedium,
         )
+        if (uiState.videos.any { uiState.analysisTasks[it.id]?.status !in setOf("QUEUED", "RUNNING", "COMPLETED") }) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onStartBatchAnalysis,
+            ) {
+                Text(text = "批量分析未完成视频")
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
         if (uiState.videos.isEmpty()) {
             Text(

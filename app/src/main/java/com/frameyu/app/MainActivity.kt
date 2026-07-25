@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
                         LibraryScreen(
                             viewModel = libraryViewModel,
                             onStartAnalysis = libraryViewModel::startVideoAnalysis,
+                            onStartBatchAnalysis = libraryViewModel::startBatchVideoAnalysis,
                             onOpenCandidates = { selectedCandidateMedia.value = it },
                             hasMediaReadPermission = hasMediaPermission.value,
                             onRequestMediaReadPermission = ::requestMediaReadPermission,

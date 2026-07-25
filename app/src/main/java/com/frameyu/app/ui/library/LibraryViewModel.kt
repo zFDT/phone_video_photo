@@ -66,22 +66,34 @@ class LibraryViewModel(
 
     fun startVideoAnalysis(media: MediaAssetEntity) {
         viewModelScope.launch {
-            val current = analysisTaskDao.getTaskProgress(media.id)
-            if (current?.status == "QUEUED" || current?.status == "RUNNING") return@launch
-            analysisCandidateDao.deleteByMediaAssetId(media.id)
-            analysisTaskDao.saveTaskProgress(
-                AnalysisTaskEntity(
-                    id = media.id,
-                    mediaAssetId = media.id,
-                    status = "QUEUED",
-                    progress = 0,
-                    currentTimestampMillis = 0L,
-                    errorMessage = null,
-                    updatedAtMillis = System.currentTimeMillis(),
-                ),
-            )
-            workScheduler.enqueue(media.id)
+            queueVideoAnalysis(media)
         }
+    }
+
+    /** 将媒体库中尚未完成的视频加入同一条串行分析链。 */
+    fun startBatchVideoAnalysis() {
+        viewModelScope.launch {
+            videoIdsForBatchAnalysis(uiState.value.videos, uiState.value.analysisTasks)
+                .forEach { queueVideoAnalysis(it) }
+        }
+    }
+
+    private suspend fun queueVideoAnalysis(media: MediaAssetEntity) {
+        val current = analysisTaskDao.getTaskProgress(media.id)
+        if (current?.status == "QUEUED" || current?.status == "RUNNING") return
+        analysisCandidateDao.deleteByMediaAssetId(media.id)
+        analysisTaskDao.saveTaskProgress(
+            AnalysisTaskEntity(
+                id = media.id,
+                mediaAssetId = media.id,
+                status = "QUEUED",
+                progress = 0,
+                currentTimestampMillis = 0L,
+                errorMessage = null,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
+        workScheduler.enqueue(media.id)
     }
 
     /** 触发一次全量扫描。 */
@@ -115,4 +127,11 @@ class LibraryViewModel(
             }
         }
     }
+}
+
+internal fun videoIdsForBatchAnalysis(
+    videos: List<MediaAssetEntity>,
+    tasks: Map<Long, AnalysisTaskEntity>,
+): List<MediaAssetEntity> = videos.filter { video ->
+    tasks[video.id]?.status !in setOf("QUEUED", "RUNNING", "COMPLETED")
 }

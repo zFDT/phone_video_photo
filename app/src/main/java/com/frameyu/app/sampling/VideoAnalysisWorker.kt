@@ -2,6 +2,7 @@ package com.frameyu.app.sampling
 
 import android.app.Notification
 import android.content.Context
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -68,6 +69,7 @@ class VideoAnalysisWorker(
             .setProgress(100, percent, percent == 0)
             .setOngoing(true)
             .build(),
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
     )
 
     private fun errorData(message: String): Data = Data.Builder()
