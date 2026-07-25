@@ -106,6 +106,15 @@ class VideoClipExporter(private val context: Context) {
                 put(MediaStore.Video.Media.DISPLAY_NAME, buildClipName(media, candidate))
                 put(MediaStore.Video.Media.MIME_TYPE, MIME_TYPE_MP4)
                 put(MediaStore.Video.Media.DURATION, window.endMillis - window.startMillis)
+                MetadataCopier.copyTo(
+                    this,
+                    LocalMetadata(
+                        capturedAtMillis = media.takenAtMillis,
+                        width = media.width,
+                        height = media.height,
+                        rotationDegrees = media.rotationDegrees,
+                    ),
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/帧遇")
                     put(MediaStore.Video.Media.IS_PENDING, 1)

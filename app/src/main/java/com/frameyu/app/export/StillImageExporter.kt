@@ -26,12 +26,18 @@ class StillImageExporter(private val context: Context) {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, buildStillImageName(media, candidate, format))
             put(MediaStore.Images.Media.MIME_TYPE, format.mimeType)
+            MetadataCopier.copyTo(
+                this,
+                LocalMetadata(
+                    capturedAtMillis = media.takenAtMillis,
+                    width = media.width,
+                    height = media.height,
+                    rotationDegrees = media.rotationDegrees,
+                ),
+            )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/帧遇")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-            if (media.takenAtMillis > 0L) {
-                put(MediaStore.Images.Media.DATE_TAKEN, media.takenAtMillis)
             }
         }
         val destination = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)

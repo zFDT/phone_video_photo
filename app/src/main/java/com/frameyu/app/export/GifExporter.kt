@@ -101,6 +101,15 @@ class GifExporter(private val context: Context) {
             ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, buildGifName(media, candidate))
                 put(MediaStore.Images.Media.MIME_TYPE, MIME_TYPE_GIF)
+                MetadataCopier.copyTo(
+                    this,
+                    LocalMetadata(
+                        capturedAtMillis = media.takenAtMillis,
+                        width = media.width,
+                        height = media.height,
+                        rotationDegrees = media.rotationDegrees,
+                    ),
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/帧遇")
                     put(MediaStore.Images.Media.IS_PENDING, 1)

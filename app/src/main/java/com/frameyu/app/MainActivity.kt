@@ -22,7 +22,9 @@ import com.frameyu.app.data.media.MediaUriAccess
 import com.frameyu.app.ui.library.LibraryScreen
 import com.frameyu.app.ui.library.LibraryViewModel
 import com.frameyu.app.ui.library.CandidateBrowserScreen
+import com.frameyu.app.ui.library.CandidateDetailScreen
 import com.frameyu.app.data.db.MediaAssetEntity
+import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private val mediaUriAccess by lazy { MediaUriAccess(this) }
     private var hasMediaPermission = mutableStateOf(false)
     private var selectedCandidateMedia = mutableStateOf<MediaAssetEntity?>(null)
+    private var selectedCandidate = mutableStateOf<AnalysisCandidateEntity?>(null)
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission() }
@@ -73,14 +76,24 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     } else {
-                        CandidateBrowserScreen(
-                            media = candidateMedia,
-                            database = (application as FrameYuApplication).database,
-                            exporter = StillImageExporter(this@MainActivity),
-                            clipExporter = VideoClipExporter(this@MainActivity),
-                            gifExporter = GifExporter(this@MainActivity),
-                            onBack = { selectedCandidateMedia.value = null },
-                        )
+                        val candidate = selectedCandidate.value
+                        if (candidate == null) {
+                            CandidateBrowserScreen(
+                                media = candidateMedia,
+                                database = (application as FrameYuApplication).database,
+                                exporter = StillImageExporter(this@MainActivity),
+                                clipExporter = VideoClipExporter(this@MainActivity),
+                                gifExporter = GifExporter(this@MainActivity),
+                                onOpenDetail = { selectedCandidate.value = it },
+                                onBack = { selectedCandidateMedia.value = null },
+                            )
+                        } else {
+                            CandidateDetailScreen(
+                                media = candidateMedia,
+                                candidate = candidate,
+                                onBack = { selectedCandidate.value = null },
+                            )
+                        }
                     }
                 }
             }

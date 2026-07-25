@@ -56,6 +56,7 @@ fun CandidateBrowserScreen(
     exporter: StillImageExporter,
     clipExporter: VideoClipExporter,
     gifExporter: GifExporter,
+    onOpenDetail: (AnalysisCandidateEntity) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val candidates by database.analysisCandidateDao()
@@ -173,6 +174,7 @@ fun CandidateBrowserScreen(
                                 )
                             }
                         },
+                        onOpenDetail = { onOpenDetail(candidate) },
                     )
                 }
             }
@@ -219,6 +221,7 @@ private fun CandidateCard(
     media: MediaAssetEntity,
     candidate: AnalysisCandidateEntity,
     onClick: () -> Unit,
+    onOpenDetail: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -252,6 +255,7 @@ private fun CandidateCard(
         ) {
             Text(text = formatCandidateTimestamp(candidate.timestampMillis))
             Text(text = "${candidate.score} 分")
+            TextButton(onClick = onOpenDetail) { Text(text = "详情") }
         }
     }
 }
