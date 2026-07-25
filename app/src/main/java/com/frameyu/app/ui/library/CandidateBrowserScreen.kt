@@ -35,6 +35,7 @@ import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.export.StillImageExporter
+import com.frameyu.app.export.StillImageFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -119,6 +120,16 @@ fun CandidateBrowserScreen(
                                 }
                             }
                         },
+                        onExportWebp = {
+                            scope.launch {
+                                exportMessage = try {
+                                    exporter.exportCandidate(media, candidate, StillImageFormat.WEBP)
+                                    "已导出 WebP ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                } catch (error: Throwable) {
+                                    "导出失败：${error.message ?: "未知错误"}"
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -132,6 +143,7 @@ private fun CandidateRow(
     candidate: AnalysisCandidateEntity,
     onSelectionChanged: (Boolean) -> Unit,
     onExport: () -> Unit,
+    onExportWebp: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         CandidatePreview(
@@ -149,6 +161,7 @@ private fun CandidateRow(
             Text(text = if (candidate.isSelected) "取消选择" else "选择此帧")
         }
         Button(onClick = onExport) { Text(text = "导出图片") }
+        Button(onClick = onExportWebp) { Text(text = "导出 WebP") }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,

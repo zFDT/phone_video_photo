@@ -37,5 +37,9 @@ class StillImageExporterTest {
         )
 
         assertEquals("42-帧-001250.jpg", StillImageExporter.buildStillImageName(media, candidate))
+        assertEquals(
+            "42-帧-001250.webp",
+            StillImageExporter.buildStillImageName(media, candidate, StillImageFormat.WEBP),
+        )
     }
 }

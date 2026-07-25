@@ -15,16 +15,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/** 从视频候选时间点导出 SDR JPEG 到系统相册。 */
+/** 从视频候选时间点导出静态 JPEG 或 WebP 到系统相册。 */
 class StillImageExporter(private val context: Context) {
     suspend fun exportCandidate(
         media: MediaAssetEntity,
         candidate: AnalysisCandidateEntity,
+        format: StillImageFormat = StillImageFormat.JPEG,
     ): Uri = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, buildStillImageName(media, candidate))
-            put(MediaStore.Images.Media.MIME_TYPE, MIME_TYPE_JPEG)
+            put(MediaStore.Images.Media.DISPLAY_NAME, buildStillImageName(media, candidate, format))
+            put(MediaStore.Images.Media.MIME_TYPE, format.mimeType)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/帧遇")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -41,7 +42,7 @@ class StillImageExporter(private val context: Context) {
                 ?: error("无法读取候选帧画面")
             try {
                 resolver.openOutputStream(destination)?.use { output ->
-                    check(bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)) {
+                    check(bitmap.compress(format.compressFormat, format.quality, output)) {
                         "候选帧压缩失败"
                     }
                 } ?: error("无法打开相册导出文件")
@@ -78,19 +79,32 @@ class StillImageExporter(private val context: Context) {
 
     companion object {
         const val MIME_TYPE_JPEG = "image/jpeg"
+        const val MIME_TYPE_WEBP = "image/webp"
         const val JPEG_QUALITY = 100
 
         internal fun buildStillImageName(
             media: MediaAssetEntity,
             candidate: AnalysisCandidateEntity,
+            format: StillImageFormat = StillImageFormat.JPEG,
         ): String {
             val baseName = media.uri.substringAfterLast('/').substringBeforeLast('.').ifBlank { "视频" }
             return String.format(
                 Locale.ROOT,
-                "%s-帧-%06d.jpg",
+                "%s-帧-%06d.%s",
                 baseName,
                 candidate.timestampMillis.coerceAtLeast(0L),
+                format.extension,
             )
         }
     }
+}
+
+enum class StillImageFormat(
+    val mimeType: String,
+    val extension: String,
+    val compressFormat: Bitmap.CompressFormat,
+    val quality: Int,
+) {
+    JPEG("image/jpeg", "jpg", Bitmap.CompressFormat.JPEG, 100),
+    WEBP("image/webp", "webp", Bitmap.CompressFormat.WEBP, 100),
 }
