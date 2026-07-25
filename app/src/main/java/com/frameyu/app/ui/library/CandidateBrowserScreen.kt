@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
+import com.frameyu.app.export.StillImageExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,6 +43,7 @@ import kotlinx.coroutines.withContext
 fun CandidateBrowserScreen(
     media: MediaAssetEntity,
     database: FrameYuDatabase,
+    exporter: StillImageExporter,
     onBack: () -> Unit,
 ) {
     val candidates by database.analysisCandidateDao()
@@ -49,6 +51,7 @@ fun CandidateBrowserScreen(
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var sortByScore by rememberSaveable { mutableStateOf(true) }
+    var exportMessage by rememberSaveable { mutableStateOf<String?>(null) }
     val sortedCandidates = sortCandidates(candidates, sortByScore)
     val selectedCount = candidates.count { it.isSelected }
 
@@ -71,6 +74,7 @@ fun CandidateBrowserScreen(
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
         )
+        exportMessage?.let { Text(text = it, style = MaterialTheme.typography.bodySmall) }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -105,6 +109,16 @@ fun CandidateBrowserScreen(
                                 database.analysisCandidateDao().setSelected(media.id, candidate.id, selected)
                             }
                         },
+                        onExport = {
+                            scope.launch {
+                                exportMessage = try {
+                                    exporter.exportCandidate(media, candidate)
+                                    "已导出 ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                } catch (error: Throwable) {
+                                    "导出失败：${error.message ?: "未知错误"}"
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -117,6 +131,7 @@ private fun CandidateRow(
     media: MediaAssetEntity,
     candidate: AnalysisCandidateEntity,
     onSelectionChanged: (Boolean) -> Unit,
+    onExport: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         CandidatePreview(
@@ -133,6 +148,7 @@ private fun CandidateRow(
         Button(onClick = { onSelectionChanged(!candidate.isSelected) }) {
             Text(text = if (candidate.isSelected) "取消选择" else "选择此帧")
         }
+        Button(onClick = onExport) { Text(text = "导出图片") }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,

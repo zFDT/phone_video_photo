@@ -23,6 +23,7 @@ import com.frameyu.app.ui.library.LibraryScreen
 import com.frameyu.app.ui.library.LibraryViewModel
 import com.frameyu.app.ui.library.CandidateBrowserScreen
 import com.frameyu.app.data.db.MediaAssetEntity
+import com.frameyu.app.export.StillImageExporter
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -72,6 +73,7 @@ class MainActivity : ComponentActivity() {
                         CandidateBrowserScreen(
                             media = candidateMedia,
                             database = (application as FrameYuApplication).database,
+                            exporter = StillImageExporter(this@MainActivity),
                             onBack = { selectedCandidateMedia.value = null },
                         )
                     }
