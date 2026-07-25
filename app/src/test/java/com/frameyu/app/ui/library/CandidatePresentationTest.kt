@@ -28,7 +28,33 @@ class CandidatePresentationTest {
         assertEquals("10 秒", formatDurationSeconds(10_000L))
     }
 
-    private fun candidate(id: Long, timestampMillis: Long, score: Int) = AnalysisCandidateEntity(
+    @Test
+    fun `批量选择评分最高的候选帧`() {
+        val candidates = listOf(
+            candidate(id = 1L, timestampMillis = 2_000L, score = 70),
+            candidate(id = 2L, timestampMillis = 1_000L, score = 95),
+            candidate(id = 3L, timestampMillis = 3_000L, score = 88),
+        )
+
+        assertEquals(listOf(2L, 3L), topCandidateIds(candidates, 2))
+    }
+
+    @Test
+    fun `批量导出只返回已选候选帧`() {
+        val candidates = listOf(
+            candidate(id = 1L, timestampMillis = 2_000L, score = 70, isSelected = true),
+            candidate(id = 2L, timestampMillis = 1_000L, score = 95),
+        )
+
+        assertEquals(listOf(1L), selectedCandidateIds(candidates))
+    }
+
+    private fun candidate(
+        id: Long,
+        timestampMillis: Long,
+        score: Int,
+        isSelected: Boolean = false,
+    ) = AnalysisCandidateEntity(
         id = id,
         mediaAssetId = 10L,
         timestampMillis = timestampMillis,
@@ -39,6 +65,6 @@ class CandidatePresentationTest {
         compositionScore = score,
         sceneScore = 0,
         thumbnailPath = null,
-        isSelected = false,
+        isSelected = isSelected,
     )
 }

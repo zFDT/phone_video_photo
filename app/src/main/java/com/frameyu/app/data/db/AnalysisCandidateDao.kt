@@ -23,6 +23,9 @@ interface AnalysisCandidateDao {
     )
     suspend fun setSelected(mediaAssetId: Long, candidateId: Long, selected: Boolean)
 
+    @Query("UPDATE analysis_candidates SET is_selected = :selected WHERE media_asset_id = :mediaAssetId")
+    suspend fun setAllSelected(mediaAssetId: Long, selected: Boolean)
+
     @Query("DELETE FROM analysis_candidates WHERE media_asset_id = :mediaAssetId")
     suspend fun deleteByMediaAssetId(mediaAssetId: Long)
 

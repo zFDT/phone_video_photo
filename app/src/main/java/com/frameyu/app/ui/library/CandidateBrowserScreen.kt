@@ -4,20 +4,26 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,16 +34,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
-import com.frameyu.app.export.StillImageExporter
-import com.frameyu.app.export.StillImageFormat
-import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
+import com.frameyu.app.export.StillImageExporter
+import com.frameyu.app.export.VideoClipExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,29 +65,52 @@ fun CandidateBrowserScreen(
     var sortByScore by rememberSaveable { mutableStateOf(true) }
     var clipDurationMillis by rememberSaveable { mutableStateOf(3_000L) }
     var exportMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var isExporting by rememberSaveable { mutableStateOf(false) }
     val sortedCandidates = sortCandidates(candidates, sortByScore)
-    val selectedCount = candidates.count { it.isSelected }
+    val selectedCandidates = candidates.filter { it.isSelected }
+
+    fun setAllSelected(selected: Boolean) {
+        scope.launch { database.analysisCandidateDao().setAllSelected(media.id, selected) }
+    }
+
+    fun selectTopCandidates() {
+        scope.launch {
+            val dao = database.analysisCandidateDao()
+            dao.setAllSelected(media.id, false)
+            topCandidateIds(candidates, 5).forEach { dao.setSelected(media.id, it, true) }
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp),
+            .padding(horizontal = 16.dp, vertical = 20.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(onClick = onBack) { Text(text = "返回") }
-            Text(text = "精彩帧候选", style = MaterialTheme.typography.titleLarge)
-            Text(text = "${candidates.size} 帧 · 已选 $selectedCount")
+            TextButton(onClick = onBack) { Text(text = "返回") }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(text = "精彩帧候选", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = "${candidates.size} 帧 · 已选 ${selectedCandidates.size}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            TextButton(onClick = { setAllSelected(true) }, enabled = candidates.isNotEmpty()) {
+                Text(text = "全选")
+            }
         }
         Text(
             text = media.uri.substringAfterLast('/'),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
         )
-        exportMessage?.let { Text(text = it, style = MaterialTheme.typography.bodySmall) }
+        exportMessage?.let {
+            Text(text = it, style = MaterialTheme.typography.bodySmall)
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -91,13 +121,19 @@ fun CandidateBrowserScreen(
             TextButton(onClick = { sortByScore = false }, enabled = sortByScore) {
                 Text(text = "按时间")
             }
+            TextButton(onClick = ::selectTopCandidates, enabled = candidates.isNotEmpty()) {
+                Text(text = "最高分 5 帧")
+            }
+            TextButton(onClick = { setAllSelected(false) }, enabled = selectedCandidates.isNotEmpty()) {
+                Text(text = "清空")
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "动态时长")
+            Text(text = "动态时长", style = MaterialTheme.typography.bodySmall)
             listOf(3_000L, 5_000L, 10_000L).forEach { durationMillis ->
                 TextButton(
                     onClick = { clipDurationMillis = durationMillis },
@@ -117,103 +153,162 @@ fun CandidateBrowserScreen(
                 Text(text = "请先完成一次视频分析。", style = MaterialTheme.typography.bodySmall)
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(sortedCandidates, key = AnalysisCandidateEntity::id) { candidate ->
-                    CandidateRow(
+                    CandidateCard(
                         media = media,
                         candidate = candidate,
-                        clipDurationMillis = clipDurationMillis,
-                        onSelectionChanged = { selected ->
+                        onClick = {
                             scope.launch {
-                                database.analysisCandidateDao().setSelected(media.id, candidate.id, selected)
-                            }
-                        },
-                        onExport = {
-                            scope.launch {
-                                exportMessage = try {
-                                    exporter.exportCandidate(media, candidate)
-                                    "已导出 ${formatCandidateTimestamp(candidate.timestampMillis)}"
-                                } catch (error: Throwable) {
-                                    "导出失败：${error.message ?: "未知错误"}"
-                                }
-                            }
-                        },
-                        onExportWebp = {
-                            scope.launch {
-                                exportMessage = try {
-                                    exporter.exportCandidate(media, candidate, StillImageFormat.WEBP)
-                                    "已导出 WebP ${formatCandidateTimestamp(candidate.timestampMillis)}"
-                                } catch (error: Throwable) {
-                                    "导出失败：${error.message ?: "未知错误"}"
-                                }
-                            }
-                        },
-                        onExportMp4 = {
-                            scope.launch {
-                                exportMessage = try {
-                                    clipExporter.exportCandidate(media, candidate, clipDurationMillis)
-                                    "已导出 ${formatDurationSeconds(clipDurationMillis)} MP4 ${formatCandidateTimestamp(candidate.timestampMillis)}"
-                                } catch (error: Throwable) {
-                                    "导出失败：${error.message ?: "未知错误"}"
-                                }
-                            }
-                        },
-                        onExportGif = {
-                            scope.launch {
-                                exportMessage = try {
-                                    gifExporter.exportCandidate(media, candidate, clipDurationMillis)
-                                    "已导出 ${formatDurationSeconds(clipDurationMillis)} GIF ${formatCandidateTimestamp(candidate.timestampMillis)}"
-                                } catch (error: Throwable) {
-                                    "导出失败：${error.message ?: "未知错误"}"
-                                }
+                                database.analysisCandidateDao().setSelected(
+                                    media.id,
+                                    candidate.id,
+                                    !candidate.isSelected,
+                                )
                             }
                         },
                     )
                 }
             }
         }
+        if (selectedCandidates.isNotEmpty()) {
+            BatchExportBar(
+                selectedCount = selectedCandidates.size,
+                clipDurationMillis = clipDurationMillis,
+                enabled = !isExporting,
+                onExportJpeg = {
+                    scope.launch {
+                        isExporting = true
+                        exportMessage = exportSelected(selectedCandidates) { candidate ->
+                            exporter.exportCandidate(media, candidate)
+                        }
+                        isExporting = false
+                    }
+                },
+                onExportGif = {
+                    scope.launch {
+                        isExporting = true
+                        exportMessage = exportSelected(selectedCandidates) { candidate ->
+                            gifExporter.exportCandidate(media, candidate, clipDurationMillis)
+                        }
+                        isExporting = false
+                    }
+                },
+                onExportMp4 = {
+                    scope.launch {
+                        isExporting = true
+                        exportMessage = exportSelected(selectedCandidates) { candidate ->
+                            clipExporter.exportCandidate(media, candidate, clipDurationMillis)
+                        }
+                        isExporting = false
+                    }
+                },
+            )
+        }
     }
 }
 
 @Composable
-private fun CandidateRow(
+private fun CandidateCard(
     media: MediaAssetEntity,
     candidate: AnalysisCandidateEntity,
-    clipDurationMillis: Long,
-    onSelectionChanged: (Boolean) -> Unit,
-    onExport: () -> Unit,
-    onExportWebp: () -> Unit,
-    onExportMp4: () -> Unit,
-    onExportGif: () -> Unit,
+    onClick: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        CandidatePreview(
-            uri = media.uri,
-            timestampMillis = candidate.timestampMillis,
-        )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+    ) {
+        Box {
+            CandidatePreview(
+                uri = media.uri,
+                timestampMillis = candidate.timestampMillis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(170.dp),
+            )
+            if (candidate.isSelected) {
+                Text(
+                    text = "✓ 已选",
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .background(MaterialTheme.colorScheme.primary)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+        }
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(text = formatCandidateTimestamp(candidate.timestampMillis))
-            Text(text = "评分 ${candidate.score}")
+            Text(text = "${candidate.score} 分")
         }
-        Button(onClick = { onSelectionChanged(!candidate.isSelected) }) {
-            Text(text = if (candidate.isSelected) "取消选择" else "选择此帧")
-        }
-        Button(onClick = onExport) { Text(text = "导出图片") }
-        Button(onClick = onExportWebp) { Text(text = "导出 WebP") }
-        Button(onClick = onExportMp4) { Text(text = "导出 ${formatDurationSeconds(clipDurationMillis)} MP4") }
-        Button(onClick = onExportGif) { Text(text = "导出 GIF") }
-        Text(
-            text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
-            style = MaterialTheme.typography.bodySmall,
-        )
     }
 }
+
+@Composable
+private fun BatchExportBar(
+    selectedCount: Int,
+    clipDurationMillis: Long,
+    enabled: Boolean,
+    onExportJpeg: () -> Unit,
+    onExportGif: () -> Unit,
+    onExportMp4: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(text = "已选择 $selectedCount 帧", style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(onClick = onExportJpeg, enabled = enabled, modifier = Modifier.weight(1f)) {
+                Text(text = "导出图片")
+            }
+            Button(onClick = onExportGif, enabled = enabled, modifier = Modifier.weight(1f)) {
+                Text(text = "GIF")
+            }
+            Button(onClick = onExportMp4, enabled = enabled, modifier = Modifier.weight(1f)) {
+                Text(text = "${formatDurationSeconds(clipDurationMillis)} MP4")
+            }
+        }
+    }
+}
+
+private suspend fun exportSelected(
+    candidates: List<AnalysisCandidateEntity>,
+    export: suspend (AnalysisCandidateEntity) -> Uri,
+): String {
+    var completedCount = 0
+    return try {
+        candidates.forEach {
+            export(it)
+            completedCount++
+        }
+        "已导出 $completedCount 帧"
+    } catch (error: Throwable) {
+        "已导出 $completedCount/${candidates.size} 帧：${error.message ?: "部分失败"}"
+    }
+}
+
+internal fun topCandidateIds(
+    candidates: List<AnalysisCandidateEntity>,
+    count: Int,
+): List<Long> = candidates.sortedWith(
+    compareByDescending<AnalysisCandidateEntity> { it.score }.thenBy { it.timestampMillis },
+).take(count.coerceAtLeast(0)).map { it.id }
+
+internal fun selectedCandidateIds(candidates: List<AnalysisCandidateEntity>): List<Long> =
+    candidates.filter { it.isSelected }.map { it.id }
 
 internal fun sortCandidates(
     candidates: List<AnalysisCandidateEntity>,
@@ -225,7 +320,11 @@ internal fun sortCandidates(
 }
 
 @Composable
-private fun CandidatePreview(uri: String, timestampMillis: Long) {
+private fun CandidatePreview(
+    uri: String,
+    timestampMillis: Long,
+    modifier: Modifier,
+) {
     val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(initialValue = null, uri, timestampMillis) {
         value = withContext(Dispatchers.IO) {
@@ -233,7 +332,7 @@ private fun CandidatePreview(uri: String, timestampMillis: Long) {
             try {
                 retriever.setDataSource(context, Uri.parse(uri))
                 retriever.getFrameAtTime(
-                    timestampMillis * 1_000L,
+                    timestampMillis.coerceAtLeast(0L) * 1_000L,
                     MediaMetadataRetriever.OPTION_CLOSEST,
                 )?.let { source ->
                     val maxEdge = maxOf(source.width, source.height)
@@ -255,12 +354,9 @@ private fun CandidatePreview(uri: String, timestampMillis: Long) {
     }
 
     if (bitmap == null) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+        Box(
+            modifier = modifier,
+            contentAlignment = Alignment.Center,
         ) {
             CircularProgressIndicator()
         }
@@ -268,7 +364,8 @@ private fun CandidatePreview(uri: String, timestampMillis: Long) {
         Image(
             bitmap = bitmap!!.asImageBitmap(),
             contentDescription = "${formatCandidateTimestamp(timestampMillis)} 候选帧",
-            modifier = Modifier.fillMaxWidth(),
+            contentScale = ContentScale.Crop,
+            modifier = modifier,
         )
     }
 }
