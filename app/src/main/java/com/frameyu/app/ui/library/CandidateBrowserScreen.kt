@@ -37,6 +37,7 @@ import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.StillImageFormat
 import com.frameyu.app.export.VideoClipExporter
+import com.frameyu.app.export.GifExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,6 +48,7 @@ fun CandidateBrowserScreen(
     database: FrameYuDatabase,
     exporter: StillImageExporter,
     clipExporter: VideoClipExporter,
+    gifExporter: GifExporter,
     onBack: () -> Unit,
 ) {
     val candidates by database.analysisCandidateDao()
@@ -142,6 +144,16 @@ fun CandidateBrowserScreen(
                                 }
                             }
                         },
+                        onExportGif = {
+                            scope.launch {
+                                exportMessage = try {
+                                    gifExporter.exportCandidate(media, candidate)
+                                    "已导出 GIF ${formatCandidateTimestamp(candidate.timestampMillis)}"
+                                } catch (error: Throwable) {
+                                    "导出失败：${error.message ?: "未知错误"}"
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -157,6 +169,7 @@ private fun CandidateRow(
     onExport: () -> Unit,
     onExportWebp: () -> Unit,
     onExportMp4: () -> Unit,
+    onExportGif: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         CandidatePreview(
@@ -176,6 +189,7 @@ private fun CandidateRow(
         Button(onClick = onExport) { Text(text = "导出图片") }
         Button(onClick = onExportWebp) { Text(text = "导出 WebP") }
         Button(onClick = onExportMp4) { Text(text = "导出 3 秒 MP4") }
+        Button(onClick = onExportGif) { Text(text = "导出 GIF") }
         Text(
             text = "清晰度 ${candidate.sharpnessScore} · 曝光 ${candidate.compositionScore} · 场景 ${candidate.sceneScore}",
             style = MaterialTheme.typography.bodySmall,

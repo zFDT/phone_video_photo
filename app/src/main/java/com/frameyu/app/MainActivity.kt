@@ -25,6 +25,7 @@ import com.frameyu.app.ui.library.CandidateBrowserScreen
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
+import com.frameyu.app.export.GifExporter
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity() {
                             database = (application as FrameYuApplication).database,
                             exporter = StillImageExporter(this@MainActivity),
                             clipExporter = VideoClipExporter(this@MainActivity),
+                            gifExporter = GifExporter(this@MainActivity),
                             onBack = { selectedCandidateMedia.value = null },
                         )
                     }
