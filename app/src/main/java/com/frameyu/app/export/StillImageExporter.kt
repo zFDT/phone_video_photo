@@ -21,6 +21,7 @@ class StillImageExporter(private val context: Context) {
         media: MediaAssetEntity,
         candidate: AnalysisCandidateEntity,
         format: StillImageFormat = StillImageFormat.JPEG,
+        cropRect: CropRect? = null,
     ): Uri = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
@@ -44,8 +45,9 @@ class StillImageExporter(private val context: Context) {
             ?: error("无法创建相册导出文件")
 
         try {
-            val bitmap = retrieveFrame(media.uri, candidate.timestampMillis)
+            val sourceBitmap = retrieveFrame(media.uri, candidate.timestampMillis)
                 ?: error("无法读取候选帧画面")
+            val bitmap = cropBitmap(sourceBitmap, cropRect)
             try {
                 resolver.openOutputStream(destination)?.use { output ->
                     check(bitmap.compress(format.compressFormat, format.quality, output)) {
@@ -54,6 +56,7 @@ class StillImageExporter(private val context: Context) {
                 } ?: error("无法打开相册导出文件")
             } finally {
                 bitmap.recycle()
+                if (bitmap !== sourceBitmap) sourceBitmap.recycle()
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 resolver.update(
@@ -68,6 +71,15 @@ class StillImageExporter(private val context: Context) {
             resolver.delete(destination, null, null)
             throw error
         }
+    }
+
+    private fun cropBitmap(source: Bitmap, cropRect: CropRect?): Bitmap {
+        if (cropRect == null) return source
+        val left = (source.width * cropRect.left).toInt().coerceIn(0, source.width - 1)
+        val top = (source.height * cropRect.top).toInt().coerceIn(0, source.height - 1)
+        val right = (source.width * cropRect.right).toInt().coerceIn(left + 1, source.width)
+        val bottom = (source.height * cropRect.bottom).toInt().coerceIn(top + 1, source.height)
+        return Bitmap.createBitmap(source, left, top, right - left, bottom - top)
     }
 
     private fun retrieveFrame(uri: String, timestampMillis: Long): Bitmap? {
