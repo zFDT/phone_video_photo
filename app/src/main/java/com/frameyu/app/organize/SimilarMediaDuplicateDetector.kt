@@ -1,6 +1,9 @@
 package com.frameyu.app.organize
 
 import com.frameyu.app.data.db.MediaAssetEntity
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import java.util.concurrent.CancellationException
 
 /** 视觉哈希读取器；实现层应在后台线程按缩略图读取，不能保留原图。 */
 fun interface VisualHashReader {
@@ -12,6 +15,10 @@ data class SimilarMediaDuplicateResult(
     val groups: List<DuplicateGroup>,
     val failedUris: List<String>,
 )
+
+/** 当前相似扫描只处理照片；视频留给后续代表帧管线。 */
+internal fun similarPhotoCandidates(assets: Iterable<MediaAssetEntity>): List<MediaAssetEntity> =
+    assets.filter { it.mimeType.startsWith("image/") }
 
 /** 使用感知哈希生成相似媒体候选，不执行删除。 */
 class SimilarMediaDuplicateDetector(
@@ -25,55 +32,78 @@ class SimilarMediaDuplicateDetector(
     }
 
     suspend fun detect(assets: Iterable<MediaAssetEntity>): SimilarMediaDuplicateResult {
+        val coroutineContext = currentCoroutineContext()
+        val assetList = mutableListOf<MediaAssetEntity>()
+        assets.forEach { asset ->
+            coroutineContext.ensureActive()
+            assetList += asset
+        }
+        val sortedAssets = assetList.sortedWith { left, right ->
+            coroutineContext.ensureActive()
+            keepPreference.compare(left, right)
+        }
         val hashedAssets = mutableListOf<HashedAsset>()
         val failedUris = mutableListOf<String>()
-        assets.forEach { asset ->
-            runCatching { reader.readHash(asset.uri) }
-                .onSuccess { hashedAssets += HashedAsset(asset, it) }
-                .onFailure { failedUris += asset.uri }
+        sortedAssets.forEach { asset ->
+            coroutineContext.ensureActive()
+            val hash = try {
+                reader.readHash(asset.uri)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                failedUris += asset.uri
+                return@forEach
+            }
+            hashedAssets += HashedAsset(asset, hash)
         }
 
-        val parent = hashedAssets.indices.toMutableList()
-        for (left in hashedAssets.indices) {
-            for (right in left + 1 until hashedAssets.size) {
-                if (kotlin.math.abs(hashedAssets[left].asset.takenAtMillis - hashedAssets[right].asset.takenAtMillis) > timeWindowMillis) continue
-                if (PerceptualHash.hammingDistance(hashedAssets[left].hash, hashedAssets[right].hash) <= maxHammingDistance) {
-                    union(parent, left, right)
+        val clusters = mutableListOf<MutableList<HashedAsset>>()
+        var firstActiveCluster = 0
+        hashedAssets.forEach { candidate ->
+            coroutineContext.ensureActive()
+            while (
+                firstActiveCluster < clusters.size &&
+                !isWithinTimeWindow(
+                    clusters[firstActiveCluster].first().asset.takenAtMillis,
+                    candidate.asset.takenAtMillis,
+                )
+            ) {
+                coroutineContext.ensureActive()
+                firstActiveCluster += 1
+            }
+            var cluster: MutableList<HashedAsset>? = null
+            for (index in firstActiveCluster until clusters.size) {
+                coroutineContext.ensureActive()
+                val members = clusters[index]
+                val representative = members.first()
+                if (PerceptualHash.hammingDistance(representative.hash, candidate.hash) <= maxHammingDistance) {
+                    cluster = members
+                    break
                 }
+            }
+            if (cluster == null) {
+                clusters += mutableListOf(candidate)
+            } else {
+                cluster += candidate
             }
         }
 
-        val groups = parent.indices.groupBy { find(parent, it) }
-            .values
+        val groups = clusters
             .filter { it.size > 1 }
-            .map { indexes ->
-                val group = indexes.map { hashedAssets[it].asset }
+            .map { cluster ->
+                val group = cluster.map(HashedAsset::asset)
                 DuplicateGroup(
                     duplicateKey = "visual:" + group.map(MediaAssetEntity::id).sorted().joinToString(","),
                     assets = group,
-                    suggestedKeep = group.minWithOrNull(keepPreference)!!,
+                    suggestedKeep = group.first(),
                 )
             }
         return SimilarMediaDuplicateResult(groups, failedUris)
     }
 
-    private fun union(parent: MutableList<Int>, left: Int, right: Int) {
-        val leftRoot = find(parent, left)
-        val rightRoot = find(parent, right)
-        if (leftRoot != rightRoot) parent[rightRoot] = leftRoot
-    }
-
-    private fun find(parent: MutableList<Int>, index: Int): Int {
-        var root = index
-        while (parent[root] != root) root = parent[root]
-        var current = index
-        while (parent[current] != current) {
-            val next = parent[current]
-            parent[current] = root
-            current = next
-        }
-        return root
-    }
+    private fun isWithinTimeWindow(earlierMillis: Long, laterMillis: Long): Boolean =
+        earlierMillis > Long.MAX_VALUE - timeWindowMillis ||
+            laterMillis <= earlierMillis + timeWindowMillis
 
     private data class HashedAsset(val asset: MediaAssetEntity, val hash: Long)
 

@@ -85,11 +85,11 @@ fun OrganizerScreen(
         Text(
             text = when {
                 similarResult != null ->
-                    "已完成相似媒体扫描；只会处理你勾选并确认的项目。"
+                    "已完成相似照片扫描；只会处理你勾选并确认的项目。"
                 exactResult != null ->
                     "已完成完全重复扫描；只会处理你勾选并确认的项目。"
                 else ->
-                    "当前显示的是元数据候选；可进一步扫描完全重复或相似媒体。"
+                    "当前显示的是元数据候选；可进一步扫描完全重复或相似照片。"
             },
             style = MaterialTheme.typography.bodySmall,
         )
@@ -129,17 +129,17 @@ fun OrganizerScreen(
                                 similarResult = it
                                 selectedKeys = emptySet()
                                 message = if (it.failedUris.isEmpty()) {
-                                    "相似媒体扫描完成：发现 ${it.groups.size} 组"
+                                    "相似照片扫描完成：发现 ${it.groups.size} 组"
                                 } else {
-                                    "相似媒体扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
+                                    "相似照片扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
                                 }
                             }
-                            .onFailure { message = "相似媒体扫描失败：${it.message ?: "未知错误"}" }
+                            .onFailure { message = "相似照片扫描失败：${it.message ?: "未知错误"}" }
                         isScanningSimilar = false
                     }
                 },
                 enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
-            ) { Text(text = if (isScanningSimilar) "扫描中…" else "扫描相似媒体") }
+            ) { Text(text = if (isScanningSimilar) "扫描中…" else "扫描相似照片") }
             if (exactResult != null || similarResult != null) {
                 TextButton(onClick = {
                     exactResult = null
