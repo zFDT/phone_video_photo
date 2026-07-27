@@ -32,10 +32,11 @@ import com.frameyu.app.album.AlbumCategory
 import com.frameyu.app.album.AlbumClassifier
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
+import com.frameyu.app.organize.ContentHashDuplicateResult
 import com.frameyu.app.organize.DuplicateDetector
 import com.frameyu.app.organize.DuplicateGroup
-import com.frameyu.app.organize.ContentHashDuplicateResult
 import com.frameyu.app.organize.OrganizerRepository
+import com.frameyu.app.organize.SimilarMediaDuplicateResult
 import kotlinx.coroutines.launch
 
 /** 相册整理页：只展示候选，删除必须经过用户明确确认。 */
@@ -44,12 +45,14 @@ fun OrganizerScreen(
     database: FrameYuDatabase,
     repository: OrganizerRepository,
     onExactDuplicateScan: suspend (List<MediaAssetEntity>) -> ContentHashDuplicateResult,
+    onSimilarDuplicateScan: suspend (List<MediaAssetEntity>) -> SimilarMediaDuplicateResult,
     onBack: () -> Unit,
 ) {
     val assets by database.mediaAssetDao().observeAll().collectAsState(initial = emptyList())
-    val groups = remember(assets) { repository.duplicateCandidates(assets) }
+    val metadataGroups = remember(assets) { repository.duplicateCandidates(assets) }
     var exactResult by remember { mutableStateOf<ContentHashDuplicateResult?>(null) }
-    val displayGroups = exactResult?.groups ?: groups
+    var similarResult by remember { mutableStateOf<SimilarMediaDuplicateResult?>(null) }
+    val displayGroups = similarResult?.groups ?: exactResult?.groups ?: metadataGroups
     val classifier = remember { AlbumClassifier() }
     val categories = remember(assets) {
         assets.groupingBy { classifier.classify(it).first() }.eachCount()
@@ -58,6 +61,7 @@ fun OrganizerScreen(
     var selectedKeys by remember { mutableStateOf(emptySet<String>()) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var isScanningExact by remember { mutableStateOf(false) }
+    var isScanningSimilar by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -79,16 +83,22 @@ fun OrganizerScreen(
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            text = if (exactResult == null) {
-                "当前显示的是元数据候选；完全重复扫描会逐字节比较文件内容。"
-            } else {
-                "已完成完全重复扫描；只会处理你勾选并确认的项目。"
+            text = when {
+                similarResult != null ->
+                    "已完成相似媒体扫描；只会处理你勾选并确认的项目。"
+                exactResult != null ->
+                    "已完成完全重复扫描；只会处理你勾选并确认的项目。"
+                else ->
+                    "当前显示的是元数据候选；可进一步扫描完全重复或相似媒体。"
             },
             style = MaterialTheme.typography.bodySmall,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(
                 onClick = {
+                    exactResult = null
+                    similarResult = null
+                    selectedKeys = emptySet()
                     isScanningExact = true
                     scope.launch {
                         runCatching { onExactDuplicateScan(assets) }
@@ -105,10 +115,37 @@ fun OrganizerScreen(
                         isScanningExact = false
                     }
                 },
-                enabled = assets.isNotEmpty() && !isScanningExact,
+                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
             ) { Text(text = if (isScanningExact) "扫描中…" else "扫描完全重复") }
-            if (exactResult != null) {
-                TextButton(onClick = { exactResult = null; selectedKeys = emptySet() }) {
+            OutlinedButton(
+                onClick = {
+                    exactResult = null
+                    similarResult = null
+                    selectedKeys = emptySet()
+                    isScanningSimilar = true
+                    scope.launch {
+                        runCatching { onSimilarDuplicateScan(assets) }
+                            .onSuccess {
+                                similarResult = it
+                                selectedKeys = emptySet()
+                                message = if (it.failedUris.isEmpty()) {
+                                    "相似媒体扫描完成：发现 ${it.groups.size} 组"
+                                } else {
+                                    "相似媒体扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
+                                }
+                            }
+                            .onFailure { message = "相似媒体扫描失败：${it.message ?: "未知错误"}" }
+                        isScanningSimilar = false
+                    }
+                },
+                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
+            ) { Text(text = if (isScanningSimilar) "扫描中…" else "扫描相似媒体") }
+            if (exactResult != null || similarResult != null) {
+                TextButton(onClick = {
+                    exactResult = null
+                    similarResult = null
+                    selectedKeys = emptySet()
+                }) {
                     Text(text = "返回候选")
                 }
             }
@@ -156,7 +193,7 @@ fun OrganizerScreen(
     }
 
     if (showDeleteConfirmation) {
-        val selectedGroups = groups.filter { it.duplicateKey in selectedKeys }
+        val selectedGroups = displayGroups.filter { it.duplicateKey in selectedKeys }
         val deleteUris = selectedGroups.flatMap { group ->
             group.assets.filter { it.id != group.suggestedKeep.id }.map { Uri.parse(it.uri) }
         }

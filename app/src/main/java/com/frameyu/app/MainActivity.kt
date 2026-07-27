@@ -33,10 +33,12 @@ import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
 import com.frameyu.app.export.MotionPhotoExporter
+import com.frameyu.app.organize.AndroidVisualHashReader
 import com.frameyu.app.organize.DuplicateDetector
 import com.frameyu.app.organize.ContentHashDuplicateDetector
 import com.frameyu.app.organize.ContentHashReader
 import com.frameyu.app.organize.OrganizerRepository
+import com.frameyu.app.organize.SimilarMediaDuplicateDetector
 import com.frameyu.app.ui.organize.OrganizerScreen
 import com.frameyu.app.settings.SettingsSnapshot
 import com.frameyu.app.settings.SettingsStore
@@ -77,6 +79,9 @@ class MainActivity : ComponentActivity() {
             deleter = ::moveToSystemTrash,
         )
     }
+    private val similarMediaDuplicateDetector by lazy {
+        SimilarMediaDuplicateDetector(AndroidVisualHashReader(contentResolver))
+    }
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission() }
@@ -100,6 +105,11 @@ class MainActivity : ComponentActivity() {
                             onExactDuplicateScan = { assets ->
                                 withContext(Dispatchers.IO) {
                                     organizerRepository.exactDuplicateCandidates(assets)
+                                }
+                            },
+                            onSimilarDuplicateScan = { assets ->
+                                withContext(Dispatchers.IO) {
+                                    similarMediaDuplicateDetector.detect(assets)
                                 }
                             },
                             onBack = { showOrganizer.value = false },
