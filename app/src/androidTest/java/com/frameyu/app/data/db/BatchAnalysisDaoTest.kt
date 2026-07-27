@@ -171,14 +171,20 @@ class BatchAnalysisDaoTest {
             )
 
             dao.markRunning(itemId = 28L, updatedAtMillis = 20L)
-            assertIllegalArgument {
-                dao.failItem(
-                    itemId = 28L,
-                    retryable = true,
-                    message = "   ",
-                    updatedAtMillis = 30L,
-                )
-            }
+            dao.failItem(
+                itemId = 28L,
+                retryable = true,
+                message = "",
+                updatedAtMillis = 30L,
+            )
+            assertWorkItem(
+                database = database,
+                itemId = 28L,
+                expectedStatus = "RETRYABLE_FAILED",
+                expectedAttempts = 1,
+                expectedNextTimestampMillis = 0L,
+                expectedErrorMessage = "",
+            )
         } finally {
             database.close()
         }
@@ -272,10 +278,5 @@ class BatchAnalysisDaoTest {
     private suspend fun assertIllegalState(block: suspend () -> Unit) {
         val failure = runCatching { block() }.exceptionOrNull()
         assertTrue("应拒绝非法来源状态", failure is IllegalStateException)
-    }
-
-    private suspend fun assertIllegalArgument(block: suspend () -> Unit) {
-        val failure = runCatching { block() }.exceptionOrNull()
-        assertTrue("应拒绝非法参数", failure is IllegalArgumentException)
     }
 }

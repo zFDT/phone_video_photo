@@ -118,14 +118,13 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
-    /** message 必须包含非空白字符，持久化时保留调用方传入的原始文本。 */
+    /** 根据 retryable 映射失败状态，message 按调用方传入的原始文本持久化。 */
     suspend fun failItem(
         itemId: Long,
         retryable: Boolean,
         message: String,
         updatedAtMillis: Long,
     ) {
-        require(message.isNotBlank()) { "失败消息不能为空白" }
         val status = if (retryable) "RETRYABLE_FAILED" else "PERMANENT_FAILED"
         checkSingleItemUpdated(
             failItemInternal(itemId, status, message, updatedAtMillis),
