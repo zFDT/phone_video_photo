@@ -11,6 +11,10 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.RoomSamplingCheckpointStore
 import com.frameyu.app.data.db.SamplingCheckpointRecord
 import com.frameyu.app.domain.model.AnalysisTask
+import com.frameyu.app.system.ThermalMonitor
+import com.frameyu.app.system.ThermalState
+import com.frameyu.app.system.ThermalStatus
+import kotlinx.coroutines.delay
 
 /** 使用 Room 媒体索引和本地规则评分执行视频分析。 */
 class RoomVideoAnalysisWorkerRunner(
@@ -18,6 +22,7 @@ class RoomVideoAnalysisWorkerRunner(
     private val database: FrameYuDatabase,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val concertModeEnabledProvider: () -> Boolean = { false },
+    private val thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
 ) : VideoAnalysisWorkerRunner {
     override suspend fun run(
         taskId: Long,
@@ -68,6 +73,7 @@ class RoomVideoAnalysisWorkerRunner(
                 checkpoint = checkpoint,
                 onProgress = onProgress,
             ) { timestampMillis ->
+                awaitThermalWindow()
                 val bitmap = retriever.getFrameAtTime(
                     timestampMillis * 1_000L,
                     MediaMetadataRetriever.OPTION_CLOSEST,
@@ -118,6 +124,18 @@ class RoomVideoAnalysisWorkerRunner(
         }
     }
 
+    /** 温控暂停期间等待设备恢复；临界温度交给任务核心转为可恢复取消结果。 */
+    private suspend fun awaitThermalWindow() {
+        val monitor = ThermalMonitor()
+        while (true) {
+            when (monitor.stateFor(thermalStatusProvider())) {
+                ThermalState.RUNNING -> return
+                ThermalState.PAUSED -> delay(THERMAL_POLL_INTERVAL_MILLIS)
+                ThermalState.STOPPED -> throw kotlinx.coroutines.CancellationException("设备温度过高，已暂停分析")
+            }
+        }
+    }
+
     private fun Bitmap.scaleForAnalysis(): Bitmap {
         val maxEdge = maxOf(width, height)
         if (maxEdge <= MAX_ANALYSIS_EDGE) return this
@@ -132,5 +150,6 @@ class RoomVideoAnalysisWorkerRunner(
 
     private companion object {
         const val MAX_ANALYSIS_EDGE = 1_024
+        const val THERMAL_POLL_INTERVAL_MILLIS = 5_000L
     }
 }

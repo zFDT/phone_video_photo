@@ -15,6 +15,7 @@ import com.frameyu.app.sampling.VideoAnalysisWorkerRunner
 import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
 import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
 import com.frameyu.app.settings.SettingsStore
+import com.frameyu.app.system.AndroidThermalStatusProvider
 
 class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var database: FrameYuDatabase
@@ -42,9 +43,12 @@ class FrameYuApplication : Application(), Configuration.Provider {
             .addMigrations(FrameYuDatabase.MIGRATION_1_2, FrameYuDatabase.MIGRATION_2_3)
             .build()
         val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
-        videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database) {
-            settingsStore.read().concertModeEnabled
-        }
+        videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(
+            context = this,
+            database = database,
+            concertModeEnabledProvider = { settingsStore.read().concertModeEnabled },
+            thermalStatusProvider = AndroidThermalStatusProvider(this)::current,
+        )
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }
