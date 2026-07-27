@@ -188,6 +188,25 @@ abstract class BatchAnalysisDao {
     )
     abstract fun observeBatch(batchId: Long): Flow<AnalysisBatchWithProgress>
 
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM analysis_work_items
+            WHERE media_asset_id = :mediaAssetId
+              AND stage = :stage
+              AND analyzer_version = :analyzerVersion
+              AND status = 'COMPLETED'
+              AND id != :excludingItemId
+        )
+        """
+    )
+    abstract suspend fun hasCompletedStage(
+        mediaAssetId: Long,
+        stage: String,
+        analyzerVersion: String,
+        excludingItemId: Long,
+    ): Boolean
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertClassifications(results: List<MediaClassificationEntity>)
 

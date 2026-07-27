@@ -1,6 +1,7 @@
 package com.frameyu.app.storage
 
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertArrayEquals
@@ -48,6 +49,26 @@ class FeatureCacheTest {
 
         assertArrayEquals(floatArrayOf(3f, 4f), cache.read(firstModel, 7L), 0f)
         assertArrayEquals(floatArrayOf(2f), cache.read(secondModel, 7L), 0f)
+        assertFalse(File(cache.fileFor(firstModel, 7L).parentFile, "7.f32.bak").exists())
+    }
+
+    @Test
+    fun `覆盖提交失败时旧缓存仍可读且临时文件被清理`() {
+        val modelSha = "3".repeat(64)
+        val normalCache = FeatureCache(temporaryFolder.root)
+        val finalFile = normalCache.write(modelSha, 8L, floatArrayOf(1f, 2f))
+        val failingCache = FeatureCache(
+            temporaryFolder.root,
+            FeatureCacheMover { _, _ -> throw IOException("模拟提交 move 失败") },
+        )
+
+        assertThrows<IllegalStateException> {
+            failingCache.write(modelSha, 8L, floatArrayOf(9f, 10f))
+        }
+
+        assertArrayEquals(floatArrayOf(1f, 2f), normalCache.read(modelSha, 8L), 0f)
+        assertFalse(File(finalFile.parentFile, "${finalFile.name}.tmp").exists())
+        assertFalse(File(finalFile.parentFile, "${finalFile.name}.bak").exists())
     }
 
     @Test

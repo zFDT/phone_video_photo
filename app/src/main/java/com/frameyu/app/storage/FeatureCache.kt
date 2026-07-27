@@ -5,12 +5,19 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /** 在应用私有目录中按模型和媒体保存 float32 特征向量。 */
-class FeatureCache(
+class FeatureCache internal constructor(
     private val filesDir: File,
+    private val mover: FeatureCacheMover,
 ) {
+    constructor(filesDir: File) : this(filesDir, AtomicReplacingFeatureCacheMover)
+
     /** 返回规范化后的固定缓存路径，不创建文件。 */
     fun fileFor(modelSha256: String, mediaId: Long): File {
         val normalizedSha = normalizeModelSha(modelSha256)
@@ -74,8 +81,6 @@ class FeatureCache(
     private fun writeAtomically(finalFile: File, vector: FloatArray): File {
         val parent = requireNotNull(finalFile.parentFile) { "特征缓存路径必须包含父目录" }
         val tempFile = File(parent, "${finalFile.name}.tmp")
-        val backupFile = File(parent, "${finalFile.name}.bak")
-        var originalMoved = false
 
         try {
             if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) {
@@ -83,9 +88,6 @@ class FeatureCache(
             }
             if (tempFile.exists() && !tempFile.delete()) {
                 error("无法清理旧特征临时文件：${tempFile.absolutePath}")
-            }
-            if (backupFile.exists() && !backupFile.delete()) {
-                error("无法清理旧特征备份文件：${backupFile.absolutePath}")
             }
 
             val bytes = ByteBuffer.allocate(
@@ -100,27 +102,10 @@ class FeatureCache(
                 output.fd.sync()
             }
 
-            if (finalFile.exists()) {
-                if (!finalFile.renameTo(backupFile)) {
-                    error("无法准备覆盖旧特征缓存：${finalFile.absolutePath}")
-                }
-                originalMoved = true
-            }
-            if (!tempFile.renameTo(finalFile)) {
-                if (originalMoved && !backupFile.renameTo(finalFile)) {
-                    error("特征缓存重命名失败，且无法恢复旧缓存：${finalFile.absolutePath}")
-                }
-                error("无法提交特征缓存：${finalFile.absolutePath}")
-            }
-            if (originalMoved) {
-                backupFile.delete()
-            }
+            mover.move(tempFile.toPath(), finalFile.toPath())
             return finalFile
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             tempFile.delete()
-            if (originalMoved && !finalFile.exists()) {
-                backupFile.renameTo(finalFile)
-            }
             throw IllegalStateException("写入特征缓存失败：${finalFile.absolutePath}", error)
         }
     }
@@ -140,5 +125,24 @@ class FeatureCache(
 
         fun lockFor(file: File): Any =
             pathLocks.computeIfAbsent(file.absoluteFile.normalize().path) { Any() }
+    }
+}
+
+internal fun interface FeatureCacheMover {
+    fun move(source: Path, target: Path)
+}
+
+private object AtomicReplacingFeatureCacheMover : FeatureCacheMover {
+    override fun move(source: Path, target: Path) {
+        try {
+            Files.move(
+                source,
+                target,
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 }

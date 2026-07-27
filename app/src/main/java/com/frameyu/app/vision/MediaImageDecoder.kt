@@ -27,8 +27,13 @@ class DecodedMediaImage internal constructor(
 class MediaImageDecoder(
     private val contentResolver: ContentResolver,
 ) {
-    fun decode(uri: Uri, maxEdge: Int = DEFAULT_MAX_EDGE): DecodedMediaImage {
+    fun decode(
+        uri: Uri,
+        maxEdge: Int = DEFAULT_MAX_EDGE,
+        mediaRotationDegrees: Int = 0,
+    ): DecodedMediaImage {
         require(maxEdge > 0) { "图片解码最大边长必须大于 0" }
+        normalizeMediaRotationDegrees(mediaRotationDegrees)
         var ownedBitmap: Bitmap? = null
 
         try {
@@ -50,7 +55,7 @@ class MediaImageDecoder(
             } ?: error("BitmapFactory 无法解码图片：$uri")
             ownedBitmap = decoded
 
-            val oriented = applyExifOrientation(decoded, orientation)
+            val oriented = applyDisplayOrientation(decoded, orientation, mediaRotationDegrees)
             if (oriented !== decoded) {
                 decoded.recycle()
                 ownedBitmap = oriented
@@ -83,8 +88,12 @@ class MediaImageDecoder(
         }
     }
 
-    private fun applyExifOrientation(source: Bitmap, orientation: Int): Bitmap {
-        val transform = exifTransformFor(orientation)
+    private fun applyDisplayOrientation(
+        source: Bitmap,
+        exifOrientation: Int,
+        mediaRotationDegrees: Int,
+    ): Bitmap {
+        val transform = imageTransformFor(exifOrientation, mediaRotationDegrees)
         if (transform == ExifBitmapTransform.IDENTITY) return source
         val matrix = Matrix().apply {
             setRotate(transform.rotationDegrees)
@@ -130,5 +139,34 @@ internal fun exifTransformFor(orientation: Int): ExifBitmapTransform = when (ori
     else -> ExifBitmapTransform.IDENTITY
 }
 
+internal fun imageTransformFor(
+    exifOrientation: Int,
+    mediaRotationDegrees: Int,
+): ExifBitmapTransform {
+    val normalizedMediaRotation = normalizeMediaRotationDegrees(mediaRotationDegrees)
+    return when (exifOrientation) {
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL,
+        ExifInterface.ORIENTATION_ROTATE_180,
+        ExifInterface.ORIENTATION_FLIP_VERTICAL,
+        ExifInterface.ORIENTATION_TRANSPOSE,
+        ExifInterface.ORIENTATION_ROTATE_90,
+        ExifInterface.ORIENTATION_TRANSVERSE,
+        ExifInterface.ORIENTATION_ROTATE_270,
+        -> exifTransformFor(exifOrientation)
+        else -> ExifBitmapTransform(normalizedMediaRotation.toFloat(), 1f, 1f)
+    }
+}
+
+private fun normalizeMediaRotationDegrees(rotationDegrees: Int): Int {
+    require(rotationDegrees % RIGHT_ANGLE_DEGREES == 0) {
+        "媒体旋转角度必须是 90 度的整数倍"
+    }
+    return ((rotationDegrees % FULL_ROTATION_DEGREES) + FULL_ROTATION_DEGREES) %
+        FULL_ROTATION_DEGREES
+}
+
 private fun <Value : Any> Value?.orThrow(uri: Uri, message: String): Value =
     this ?: throw IllegalStateException("$message：$uri")
+
+private const val RIGHT_ANGLE_DEGREES = 90
+private const val FULL_ROTATION_DEGREES = 360

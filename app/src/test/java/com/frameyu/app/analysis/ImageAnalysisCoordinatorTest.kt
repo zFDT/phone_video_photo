@@ -34,12 +34,19 @@ class ImageAnalysisCoordinatorTest {
         }
         val coordinator = coordinator(store, executor)
 
-        imageStages.forEach { stage -> coordinator.analyze(workItem(stage)) }
-        imageStages.forEach { stage -> coordinator.analyze(workItem(stage)) }
+        val firstItems = imageStages.map { stage -> workItem(stage) }
+        firstItems.forEach { item ->
+            coordinator.analyze(item)
+            store.markCompleted(item)
+        }
+        imageStages.forEach { stage ->
+            coordinator.analyze(workItem(stage, id = stage.ordinal + 101L, batchId = 2L))
+        }
 
         assertEquals(1, executor.qualityCalls)
         assertEquals(1, executor.classificationCalls)
         assertEquals(1, executor.embeddingCalls)
+        assertEquals(1, executor.policyCalls)
         assertEquals(0, executor.detectionCalls)
         assertEquals(listOf(0, 1), store.classifications.values.single().map { it.rank })
         assertTrue(store.detections.isEmpty())
@@ -48,7 +55,92 @@ class ImageAnalysisCoordinatorTest {
     }
 
     @Test
-    fun `只更换对应模型 SHA 或质量版本时只重跑对应阶段`() = runBlocking {
+    fun `空分类由同版本已完成工作项复用且新版本重新分析`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor().apply {
+            classificationResult = emptyList()
+        }
+        val coordinator = coordinator(store, executor)
+        val first = workItem(
+            AnalysisStage.CLASSIFICATION,
+            analyzerVersion = "classification-empty-v1",
+            id = 11L,
+        )
+
+        coordinator.analyze(first)
+        store.markCompleted(first)
+        coordinator.analyze(first.copy(id = 12L, batchId = 2L))
+        coordinator.analyze(
+            first.copy(
+                id = 13L,
+                batchId = 3L,
+                analyzerVersion = "classification-empty-v2",
+            ),
+        )
+
+        assertEquals(2, executor.classificationCalls)
+        assertTrue(store.classifications.isEmpty())
+    }
+
+    @Test
+    fun `空检测由同版本已完成工作项复用`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor().apply {
+            shouldDetectResult = true
+            detectionResult = emptyList()
+        }
+        val coordinator = coordinator(store, executor)
+        coordinator.analyze(workItem(AnalysisStage.CLASSIFICATION))
+        val first = workItem(
+            AnalysisStage.CONDITIONAL_DETECTION,
+            analyzerVersion = "detection-empty-v1",
+            id = 21L,
+        )
+
+        coordinator.analyze(first)
+        store.markCompleted(first)
+        coordinator.analyze(first.copy(id = 22L, batchId = 2L))
+
+        assertEquals(1, executor.policyCalls)
+        assertEquals(1, executor.detectionCalls)
+        assertTrue(store.detections.isEmpty())
+    }
+
+    @Test
+    fun `检测策略版本变化时重新评估并清除同模型旧结果`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor().apply {
+            shouldDetectResult = true
+            detectionResult = listOf(
+                DetectionObservation("stage", 0.7f, 0.1f, 0.2f, 0.8f, 0.9f),
+            )
+        }
+        val coordinator = coordinator(store, executor)
+        coordinator.analyze(workItem(AnalysisStage.CLASSIFICATION))
+        val first = workItem(
+            AnalysisStage.CONDITIONAL_DETECTION,
+            analyzerVersion = "detection-policy-v1",
+            id = 31L,
+        )
+        coordinator.analyze(first)
+        store.markCompleted(first)
+
+        executor.shouldDetectResult = false
+        coordinator.analyze(
+            first.copy(
+                id = 32L,
+                batchId = 2L,
+                analyzerVersion = "detection-policy-v2",
+            ),
+        )
+
+        assertEquals(2, executor.policyCalls)
+        assertEquals(1, executor.detectionCalls)
+        assertTrue(store.detections.isEmpty())
+    }
+
+    @Test
+    fun `只更换对应模型 SHA 和阶段版本时只重跑对应阶段`() = runBlocking {
         val store = FakeImageAnalysisStore(image())
         val executor = FakeImageAnalysisStageExecutor().apply {
             shouldDetectResult = true
@@ -57,15 +149,23 @@ class ImageAnalysisCoordinatorTest {
             )
         }
         val base = coordinator(store, executor)
-        imageStages.forEach { stage -> base.analyze(workItem(stage)) }
-        base.analyze(workItem(AnalysisStage.CONDITIONAL_DETECTION))
+        imageStages.map { stage -> workItem(stage) }.forEach { item ->
+            base.analyze(item)
+            store.markCompleted(item)
+        }
         assertEquals(1, executor.detectionCalls)
 
         coordinator(
             store,
             executor,
             modelShas.copy(classification = changedClassificationSha),
-        ).analyze(workItem(AnalysisStage.CLASSIFICATION))
+        ).analyze(
+            workItem(
+                AnalysisStage.CLASSIFICATION,
+                analyzerVersion = "classification-model-v2",
+                id = 101L,
+            ),
+        )
         assertEquals(2, executor.classificationCalls)
         assertEquals(1, executor.embeddingCalls)
         assertEquals(1, executor.detectionCalls)
@@ -74,7 +174,7 @@ class ImageAnalysisCoordinatorTest {
             store,
             executor,
             modelShas.copy(embedding = changedEmbeddingSha),
-        ).analyze(workItem(AnalysisStage.EMBEDDING))
+        ).analyze(workItem(AnalysisStage.EMBEDDING, id = 102L))
         assertEquals(2, executor.embeddingCalls)
         assertEquals(2, executor.classificationCalls)
         assertEquals(1, executor.detectionCalls)
@@ -83,11 +183,17 @@ class ImageAnalysisCoordinatorTest {
             store,
             executor,
             modelShas.copy(detection = changedDetectionSha),
-        ).analyze(workItem(AnalysisStage.CONDITIONAL_DETECTION))
+        ).analyze(
+            workItem(
+                AnalysisStage.CONDITIONAL_DETECTION,
+                analyzerVersion = "detection-model-v2",
+                id = 103L,
+            ),
+        )
         assertEquals(2, executor.detectionCalls)
         assertEquals(listOf(0), store.detections.values.last().map { it.rank })
 
-        base.analyze(workItem(AnalysisStage.QUALITY, analyzerVersion = "quality-v2"))
+        base.analyze(workItem(AnalysisStage.QUALITY, analyzerVersion = "quality-v2", id = 104L))
         assertEquals(2, executor.qualityCalls)
     }
 
@@ -182,10 +288,12 @@ class ImageAnalysisCoordinatorTest {
 
     private fun workItem(
         stage: AnalysisStage,
-        analyzerVersion: String = "quality-v1",
+        analyzerVersion: String = "${stage.name.lowercase()}-v1",
+        id: Long = stage.ordinal.toLong() + 1L,
+        batchId: Long = 1L,
     ) = AnalysisWorkItemEntity(
-        id = stage.ordinal.toLong() + 1L,
-        batchId = 1L,
+        id = id,
+        batchId = batchId,
         mediaAssetId = imageId,
         stage = stage.name,
         status = "RUNNING",
@@ -258,8 +366,30 @@ private class FakeImageAnalysisStore(initialAsset: MediaAssetEntity) : ImageAnal
     val detections = linkedMapOf<ResultKey, List<MediaDetectionEntity>>()
     val featureReferences = linkedMapOf<ResultKey, MediaFeatureReferenceEntity>()
     val qualityResults = linkedMapOf<ResultKey, MediaQualityResultEntity>()
+    private val completedStages = mutableListOf<CompletedStage>()
+
+    fun markCompleted(item: AnalysisWorkItemEntity) {
+        completedStages += CompletedStage(
+            itemId = item.id,
+            mediaAssetId = item.mediaAssetId,
+            stage = item.stage,
+            analyzerVersion = item.analyzerVersion,
+        )
+    }
 
     override suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity? = assets[mediaAssetId]
+
+    override suspend fun hasCompletedStage(
+        mediaAssetId: Long,
+        stage: String,
+        analyzerVersion: String,
+        excludingItemId: Long,
+    ): Boolean = completedStages.any { completed ->
+        completed.itemId != excludingItemId &&
+            completed.mediaAssetId == mediaAssetId &&
+            completed.stage == stage &&
+            completed.analyzerVersion == analyzerVersion
+    }
 
     override suspend fun getClassifications(
         mediaAssetId: Long,
@@ -274,7 +404,12 @@ private class FakeImageAnalysisStore(initialAsset: MediaAssetEntity) : ImageAnal
         modelSha256: String,
         results: List<MediaClassificationEntity>,
     ) {
-        classifications[ResultKey(mediaAssetId, timestampMillis, modelSha256)] = results
+        val key = ResultKey(mediaAssetId, timestampMillis, modelSha256)
+        if (results.isEmpty()) {
+            classifications.remove(key)
+        } else {
+            classifications[key] = results
+        }
     }
 
     override suspend fun getDetections(
@@ -290,7 +425,12 @@ private class FakeImageAnalysisStore(initialAsset: MediaAssetEntity) : ImageAnal
         modelSha256: String,
         results: List<MediaDetectionEntity>,
     ) {
-        detections[ResultKey(mediaAssetId, timestampMillis, modelSha256)] = results
+        val key = ResultKey(mediaAssetId, timestampMillis, modelSha256)
+        if (results.isEmpty()) {
+            detections.remove(key)
+        } else {
+            detections[key] = results
+        }
     }
 
     override suspend fun getFeatureReference(
@@ -320,12 +460,17 @@ private class FakeImageAnalysisStageExecutor : ImageAnalysisStageExecutor {
     var qualityCalls = 0
     var classificationCalls = 0
     var embeddingCalls = 0
+    var policyCalls = 0
     var detectionCalls = 0
     var shouldDetectResult = false
     var classificationError: Throwable? = null
     var embeddingError: Throwable? = null
     var detectionError: Throwable? = null
     val embeddingResult = floatArrayOf(0.1f, 0.2f, 0.3f)
+    var classificationResult = listOf(
+        LabelScore("stage", 0.8f),
+        LabelScore("concert", 0.6f),
+    )
     var detectionResult = emptyList<DetectionObservation>()
 
     override suspend fun analyzeQuality(media: MediaAssetEntity): ImageQualityScores {
@@ -342,10 +487,7 @@ private class FakeImageAnalysisStageExecutor : ImageAnalysisStageExecutor {
     override suspend fun classify(media: MediaAssetEntity): List<LabelScore> {
         classificationCalls++
         classificationError?.let { throw it }
-        return listOf(
-            LabelScore("stage", 0.8f),
-            LabelScore("concert", 0.6f),
-        )
+        return classificationResult
     }
 
     override suspend fun embed(media: MediaAssetEntity): FloatArray {
@@ -357,7 +499,10 @@ private class FakeImageAnalysisStageExecutor : ImageAnalysisStageExecutor {
     override fun shouldDetect(
         media: MediaAssetEntity,
         classifications: List<LabelScore>,
-    ): Boolean = shouldDetectResult
+    ): Boolean {
+        policyCalls++
+        return shouldDetectResult
+    }
 
     override suspend fun detect(media: MediaAssetEntity): List<DetectionObservation> {
         detectionCalls++
@@ -370,4 +515,11 @@ private data class ResultKey(
     val mediaAssetId: Long,
     val timestampMillis: Long,
     val version: String,
+)
+
+private data class CompletedStage(
+    val itemId: Long,
+    val mediaAssetId: Long,
+    val stage: String,
+    val analyzerVersion: String,
 )

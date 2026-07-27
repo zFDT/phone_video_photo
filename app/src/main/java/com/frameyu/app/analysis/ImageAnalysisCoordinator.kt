@@ -46,6 +46,13 @@ data class ImageAnalysisModelShas(
 interface ImageAnalysisStore {
     suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity?
 
+    suspend fun hasCompletedStage(
+        mediaAssetId: Long,
+        stage: String,
+        analyzerVersion: String,
+        excludingItemId: Long,
+    ): Boolean
+
     suspend fun getClassifications(
         mediaAssetId: Long,
         timestampMillis: Long,
@@ -96,6 +103,18 @@ class RoomImageAnalysisStore(
 ) : ImageAnalysisStore {
     override suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity? =
         mediaAssetDao.getById(mediaAssetId)
+
+    override suspend fun hasCompletedStage(
+        mediaAssetId: Long,
+        stage: String,
+        analyzerVersion: String,
+        excludingItemId: Long,
+    ): Boolean = batchAnalysisDao.hasCompletedStage(
+        mediaAssetId,
+        stage,
+        analyzerVersion,
+        excludingItemId,
+    )
 
     override suspend fun getClassifications(
         mediaAssetId: Long,
@@ -209,9 +228,17 @@ class ImageAnalysisCoordinator(
 
         when (stage) {
             AnalysisStage.QUALITY -> analyzeQuality(media, analyzerVersion)
-            AnalysisStage.CLASSIFICATION -> analyzeClassification(media)
+            AnalysisStage.CLASSIFICATION -> analyzeClassification(
+                media,
+                workItem.id,
+                analyzerVersion,
+            )
             AnalysisStage.EMBEDDING -> analyzeEmbedding(media)
-            AnalysisStage.CONDITIONAL_DETECTION -> analyzeConditionalDetection(media)
+            AnalysisStage.CONDITIONAL_DETECTION -> analyzeConditionalDetection(
+                media,
+                workItem.id,
+                analyzerVersion,
+            )
             else -> error("不可达的图片分析阶段：$stage")
         }
     }
@@ -236,13 +263,19 @@ class ImageAnalysisCoordinator(
         )
     }
 
-    private suspend fun analyzeClassification(media: MediaAssetEntity) {
-        val existing = store.getClassifications(
+    private suspend fun analyzeClassification(
+        media: MediaAssetEntity,
+        workItemId: Long,
+        analyzerVersion: String,
+    ) {
+        if (store.hasCompletedStage(
             media.id,
-            IMAGE_TIMESTAMP_MILLIS,
-            modelShas.classification,
-        )
-        if (existing.isNotEmpty()) return
+            AnalysisStage.CLASSIFICATION.name,
+            analyzerVersion,
+            workItemId,
+        )) {
+            return
+        }
 
         val entities = stageExecutor.classify(media).mapIndexed { rank, label ->
             MediaClassificationEntity(
@@ -283,26 +316,37 @@ class ImageAnalysisCoordinator(
         )
     }
 
-    private suspend fun analyzeConditionalDetection(media: MediaAssetEntity) {
-        val existing = store.getDetections(
+    private suspend fun analyzeConditionalDetection(
+        media: MediaAssetEntity,
+        workItemId: Long,
+        analyzerVersion: String,
+    ) {
+        if (store.hasCompletedStage(
             media.id,
-            IMAGE_TIMESTAMP_MILLIS,
-            modelShas.detection,
-        )
-        if (existing.isNotEmpty()) return
+            AnalysisStage.CONDITIONAL_DETECTION.name,
+            analyzerVersion,
+            workItemId,
+        )) {
+            return
+        }
 
         val classifications = store.getClassifications(
             media.id,
             IMAGE_TIMESTAMP_MILLIS,
             modelShas.classification,
         )
-        require(classifications.isNotEmpty()) {
-            "条件目标检测缺少分类结果：mediaId=${media.id}"
-        }
         val labels = classifications.sortedBy(MediaClassificationEntity::rank).map { result ->
             LabelScore(result.label, result.confidence)
         }
-        if (!stageExecutor.shouldDetect(media, labels)) return
+        if (!stageExecutor.shouldDetect(media, labels)) {
+            store.upsertDetections(
+                media.id,
+                IMAGE_TIMESTAMP_MILLIS,
+                modelShas.detection,
+                emptyList(),
+            )
+            return
+        }
 
         val entities = stageExecutor.detect(media).mapIndexed { rank, detection ->
             MediaDetectionEntity(
@@ -413,7 +457,10 @@ class DefaultImageAnalysisStageExecutor(
     private inline fun <Result> withBitmap(
         media: MediaAssetEntity,
         block: (Bitmap) -> Result,
-    ): Result = decoder.decode(Uri.parse(media.uri)).use { decoded ->
+    ): Result = decoder.decode(
+        uri = Uri.parse(media.uri),
+        mediaRotationDegrees = media.rotationDegrees,
+    ).use { decoded ->
         block(decoded.bitmap)
     }
 
