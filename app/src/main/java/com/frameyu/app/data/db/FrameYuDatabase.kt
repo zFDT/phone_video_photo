@@ -182,8 +182,18 @@ interface AnalysisTaskDao {
 }
 
 @Database(
-    entities = [MediaAssetEntity::class, AnalysisCandidateEntity::class, AnalysisTaskEntity::class],
-    version = 3
+    entities = [
+        MediaAssetEntity::class,
+        AnalysisCandidateEntity::class,
+        AnalysisTaskEntity::class,
+        AnalysisBatchEntity::class,
+        AnalysisWorkItemEntity::class,
+        MediaClassificationEntity::class,
+        MediaDetectionEntity::class,
+        MediaFeatureReferenceEntity::class,
+        MediaQualityResultEntity::class,
+    ],
+    version = 4
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -191,6 +201,8 @@ abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun analysisCandidateDao(): AnalysisCandidateDao
 
     abstract fun analysisTaskDao(): AnalysisTaskDao
+
+    abstract fun batchAnalysisDao(): BatchAnalysisDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
@@ -205,6 +217,173 @@ abstract class FrameYuDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE analysis_candidates ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `analysis_batches` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `scope` TEXT NOT NULL,
+                        `created_at_millis` INTEGER NOT NULL,
+                        `updated_at_millis` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_analysis_batches_status` " +
+                        "ON `analysis_batches` (`status`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `analysis_work_items` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `batch_id` INTEGER NOT NULL,
+                        `media_asset_id` INTEGER NOT NULL,
+                        `stage` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `analyzer_version` TEXT NOT NULL,
+                        `next_timestamp_millis` INTEGER NOT NULL,
+                        `attempts` INTEGER NOT NULL,
+                        `error_message` TEXT,
+                        `updated_at_millis` INTEGER NOT NULL,
+                        FOREIGN KEY(`batch_id`) REFERENCES `analysis_batches`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`media_asset_id`) REFERENCES `media_assets`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_analysis_work_items_batch_id_media_asset_id_stage_analyzer_version` " +
+                        "ON `analysis_work_items` " +
+                        "(`batch_id`, `media_asset_id`, `stage`, `analyzer_version`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_analysis_work_items_batch_id` " +
+                        "ON `analysis_work_items` (`batch_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_analysis_work_items_media_asset_id` " +
+                        "ON `analysis_work_items` (`media_asset_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_analysis_work_items_status` " +
+                        "ON `analysis_work_items` (`status`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_analysis_work_items_batch_id_status` " +
+                        "ON `analysis_work_items` (`batch_id`, `status`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_classifications` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `media_asset_id` INTEGER NOT NULL,
+                        `timestamp_millis` INTEGER NOT NULL,
+                        `model_sha256` TEXT NOT NULL,
+                        `rank` INTEGER NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        FOREIGN KEY(`media_asset_id`) REFERENCES `media_assets`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_media_classifications_media_asset_id_timestamp_millis_model_sha256_rank` " +
+                        "ON `media_classifications` " +
+                        "(`media_asset_id`, `timestamp_millis`, `model_sha256`, `rank`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_media_classifications_media_asset_id` " +
+                        "ON `media_classifications` (`media_asset_id`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_detections` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `media_asset_id` INTEGER NOT NULL,
+                        `timestamp_millis` INTEGER NOT NULL,
+                        `model_sha256` TEXT NOT NULL,
+                        `rank` INTEGER NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `left` REAL NOT NULL,
+                        `top` REAL NOT NULL,
+                        `right` REAL NOT NULL,
+                        `bottom` REAL NOT NULL,
+                        FOREIGN KEY(`media_asset_id`) REFERENCES `media_assets`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_media_detections_media_asset_id_timestamp_millis_model_sha256_rank` " +
+                        "ON `media_detections` " +
+                        "(`media_asset_id`, `timestamp_millis`, `model_sha256`, `rank`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_media_detections_media_asset_id` " +
+                        "ON `media_detections` (`media_asset_id`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_feature_references` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `media_asset_id` INTEGER NOT NULL,
+                        `timestamp_millis` INTEGER NOT NULL,
+                        `model_sha256` TEXT NOT NULL,
+                        `cache_path` TEXT NOT NULL,
+                        `dimension` INTEGER NOT NULL,
+                        FOREIGN KEY(`media_asset_id`) REFERENCES `media_assets`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_media_feature_references_media_asset_id_timestamp_millis_model_sha256` " +
+                        "ON `media_feature_references` " +
+                        "(`media_asset_id`, `timestamp_millis`, `model_sha256`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_media_feature_references_media_asset_id` " +
+                        "ON `media_feature_references` (`media_asset_id`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_quality_results` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `media_asset_id` INTEGER NOT NULL,
+                        `timestamp_millis` INTEGER NOT NULL,
+                        `analyzer_version` TEXT NOT NULL,
+                        `total_score` REAL NOT NULL,
+                        `sharpness_score` REAL NOT NULL,
+                        `exposure_score` REAL NOT NULL,
+                        `noise_score` REAL NOT NULL,
+                        `composition_score` REAL NOT NULL,
+                        FOREIGN KEY(`media_asset_id`) REFERENCES `media_assets`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_media_quality_results_media_asset_id_timestamp_millis_analyzer_version` " +
+                        "ON `media_quality_results` " +
+                        "(`media_asset_id`, `timestamp_millis`, `analyzer_version`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_media_quality_results_media_asset_id` " +
+                        "ON `media_quality_results` (`media_asset_id`)"
+                )
             }
         }
     }

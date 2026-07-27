@@ -40,7 +40,11 @@ class FrameYuApplication : Application(), Configuration.Provider {
         super.onCreate()
         createVideoAnalysisNotificationChannel()
         database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
-            .addMigrations(FrameYuDatabase.MIGRATION_1_2, FrameYuDatabase.MIGRATION_2_3)
+            .addMigrations(
+                FrameYuDatabase.MIGRATION_1_2,
+                FrameYuDatabase.MIGRATION_2_3,
+                FrameYuDatabase.MIGRATION_3_4,
+            )
             .build()
         val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
         videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(
