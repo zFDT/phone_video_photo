@@ -22,26 +22,33 @@ class BatchStateMachineTest {
 
     @Test
     fun `所有合法状态转换均返回目标状态`() {
-        val transitions = mapOf(
-            (WorkItemStatus.PENDING to WorkItemEvent.START) to WorkItemStatus.RUNNING,
-            (WorkItemStatus.PENDING to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
-            (WorkItemStatus.RUNNING to WorkItemEvent.COMPLETE) to WorkItemStatus.COMPLETED,
-            (WorkItemStatus.RUNNING to WorkItemEvent.PAUSE) to WorkItemStatus.PAUSED,
-            (WorkItemStatus.RUNNING to WorkItemEvent.RETRYABLE_FAILURE) to WorkItemStatus.RETRYABLE_FAILED,
-            (WorkItemStatus.RUNNING to WorkItemEvent.PERMANENT_FAILURE) to WorkItemStatus.PERMANENT_FAILED,
-            (WorkItemStatus.RUNNING to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
-            (WorkItemStatus.PAUSED to WorkItemEvent.RESUME) to WorkItemStatus.PENDING,
-            (WorkItemStatus.PAUSED to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
-            (WorkItemStatus.RETRYABLE_FAILED to WorkItemEvent.RETRY) to WorkItemStatus.PENDING,
-            (WorkItemStatus.RETRYABLE_FAILED to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
-        )
-
-        transitions.forEach { (transition, expected) ->
+        legalTransitions.forEach { (transition, expected) ->
             assertEquals(
                 "${transition.first} + ${transition.second}",
                 expected,
                 BatchStateMachine.transition(transition.first, transition.second),
             )
+        }
+    }
+
+    @Test
+    fun `所有状态和事件组合均符合转换表`() {
+        assertEquals(7, WorkItemStatus.entries.size)
+        assertEquals(8, WorkItemEvent.entries.size)
+
+        WorkItemStatus.entries.forEach { source ->
+            WorkItemEvent.entries.forEach { event ->
+                val expected = legalTransitions[source to event]
+                if (expected != null) {
+                    assertEquals(
+                        "$source + $event",
+                        expected,
+                        BatchStateMachine.transition(source, event),
+                    )
+                } else {
+                    assertInvalidTransition(source, event)
+                }
+            }
         }
     }
 
@@ -192,5 +199,21 @@ class BatchStateMachineTest {
         assertTrue(error.message.orEmpty().contains("非法状态转换"))
         assertTrue(error.message.orEmpty().contains(source.name))
         assertTrue(error.message.orEmpty().contains(event.name))
+    }
+
+    private companion object {
+        val legalTransitions = mapOf(
+            (WorkItemStatus.PENDING to WorkItemEvent.START) to WorkItemStatus.RUNNING,
+            (WorkItemStatus.PENDING to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
+            (WorkItemStatus.RUNNING to WorkItemEvent.COMPLETE) to WorkItemStatus.COMPLETED,
+            (WorkItemStatus.RUNNING to WorkItemEvent.PAUSE) to WorkItemStatus.PAUSED,
+            (WorkItemStatus.RUNNING to WorkItemEvent.RETRYABLE_FAILURE) to WorkItemStatus.RETRYABLE_FAILED,
+            (WorkItemStatus.RUNNING to WorkItemEvent.PERMANENT_FAILURE) to WorkItemStatus.PERMANENT_FAILED,
+            (WorkItemStatus.RUNNING to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
+            (WorkItemStatus.PAUSED to WorkItemEvent.RESUME) to WorkItemStatus.PENDING,
+            (WorkItemStatus.PAUSED to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
+            (WorkItemStatus.RETRYABLE_FAILED to WorkItemEvent.RETRY) to WorkItemStatus.PENDING,
+            (WorkItemStatus.RETRYABLE_FAILED to WorkItemEvent.CANCEL) to WorkItemStatus.CANCELLED,
+        )
     }
 }
