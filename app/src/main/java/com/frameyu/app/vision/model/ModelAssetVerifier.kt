@@ -6,6 +6,11 @@ import java.security.MessageDigest
 object ModelAssetVerifier {
     private const val BUFFER_SIZE = 8 * 1024
 
+    /**
+     * 分块计算 [input] 的 SHA-256，并与 [descriptor] 中的固定摘要比较。
+     *
+     * [input] 由调用方持有，本方法不会关闭该流。
+     */
     fun matches(descriptor: ModelDescriptor, input: InputStream): Boolean {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(BUFFER_SIZE)

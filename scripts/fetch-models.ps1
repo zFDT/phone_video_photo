@@ -70,10 +70,14 @@ function Read-ModelManifest {
         $sha256 = [string]$properties[$shaKey]
         $url = [string]$properties[$urlKey]
 
+        if ($fileName.Equals('model-manifest.properties', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Reserved model file name: $fileName"
+        }
         if ([string]::IsNullOrWhiteSpace($fileName) -or
             [System.IO.Path]::IsPathRooted($fileName) -or
-            [System.IO.Path]::GetFileName($fileName) -ne $fileName) {
-            throw "Invalid model file name: $fileName"
+            [System.IO.Path]::GetFileName($fileName) -ne $fileName -or
+            -not $fileName.EndsWith('.tflite', [System.StringComparison]::Ordinal)) {
+            throw "Model file name must be a single basename with a lowercase .tflite extension: $fileName"
         }
         if ($sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
             throw "$shaKey must be a 64-character hexadecimal value"
@@ -99,7 +103,48 @@ function Read-ModelManifest {
         }
     }
 
+    $uniqueFileNames = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($model in $models) {
+        if (-not $uniqueFileNames.Add($model.FileName)) {
+            throw "Model file names must be unique: $($model.FileName)"
+        }
+    }
+
     return @($models)
+}
+
+function Resolve-SafeModelTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OutputRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    $normalizedOutputRoot = [System.IO.Path]::GetFullPath($OutputRoot).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $targetPath = [System.IO.Path]::GetFullPath((Join-Path $normalizedOutputRoot $FileName))
+    $targetParent = [System.IO.Path]::GetFullPath(
+        [System.IO.Directory]::GetParent($targetPath).FullName
+    ).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $normalizedManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
+
+    if (-not $targetParent.Equals($normalizedOutputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Model target must be a direct child of the output directory: $targetPath"
+    }
+    if ($targetPath.Equals($normalizedManifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Model target cannot overwrite the manifest: $targetPath"
+    }
+    return $targetPath
 }
 
 function Test-ModelHash {
@@ -124,11 +169,13 @@ function Install-ModelFile {
         [Parameter(Mandatory = $true)]
         [string]$SourceRoot,
         [Parameter(Mandatory = $true)]
-        [string]$OutputRoot
+        [string]$OutputRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
     )
 
     $sourcePath = Join-Path $SourceRoot $Model.FileName
-    $outputPath = Join-Path $OutputRoot $Model.FileName
+    $outputPath = Resolve-SafeModelTarget -OutputRoot $OutputRoot -FileName $Model.FileName -ManifestPath $ManifestPath
     $temporaryPath = Join-Path $OutputRoot ('.{0}.{1}.tmp' -f $Model.FileName, [guid]::NewGuid().ToString('N'))
 
     try {
@@ -146,7 +193,11 @@ function Install-ModelFile {
             throw "Model SHA-256 mismatch: $($Model.FileName)"
         }
 
-        Move-Item -LiteralPath $temporaryPath -Destination $outputPath -Force
+        $verifiedOutputPath = Resolve-SafeModelTarget -OutputRoot $OutputRoot -FileName $Model.FileName -ManifestPath $ManifestPath
+        if (-not $verifiedOutputPath.Equals($outputPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Model target changed before installation: $verifiedOutputPath"
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $verifiedOutputPath -Force
         Write-Host "Verified $($Model.FileName)  $($Model.Sha256)"
     } finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
@@ -164,7 +215,7 @@ try {
 
     if ($ValidateOnly) {
         foreach ($model in $models) {
-            $outputPath = Join-Path $outputRoot $model.FileName
+            $outputPath = Resolve-SafeModelTarget -OutputRoot $outputRoot -FileName $model.FileName -ManifestPath $manifestPath
             if (-not (Test-ModelHash -Path $outputPath -ExpectedSha256 $model.Sha256)) {
                 throw "Output model is missing or has a SHA-256 mismatch: $outputPath"
             }
@@ -175,7 +226,7 @@ try {
 
     [System.IO.Directory]::CreateDirectory($outputRoot) | Out-Null
     foreach ($model in $models) {
-        Install-ModelFile -Model $model -SourceRoot $sourceRoot -OutputRoot $outputRoot
+        Install-ModelFile -Model $model -SourceRoot $sourceRoot -OutputRoot $outputRoot -ManifestPath $manifestPath
     }
     exit 0
 } catch {
