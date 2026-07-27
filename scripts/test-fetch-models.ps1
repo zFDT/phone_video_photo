@@ -209,12 +209,47 @@ try {
         Assert-NoTemporaryFiles $output
     }
 
+    Invoke-Test 'rejects Windows invalid and reserved file names' {
+        $invalidFileNames = @(
+            'model:stream.tflite',
+            'model?.tflite',
+            'CON.tflite',
+            'cOm1.tflite',
+            'LpT9.tflite'
+        )
+        foreach ($fileName in $invalidFileNames) {
+            $models = New-BaseModels
+            $models[0].FileName = $fileName
+            Write-FixtureManifest $models
+            $output = New-CaseOutput ('windows-name-' + [guid]::NewGuid().ToString('N'))
+            $result = Invoke-FixtureFetch @('-OutputDirectory', $output, '-ValidateOnly')
+            Assert-ExitCode $result $false
+            Assert-True ($result.Output -notmatch 'Output model is missing') "File name passed manifest validation: $fileName"
+            Assert-NoTemporaryFiles $output
+        }
+    }
+
     Invoke-Test 'rejects duplicate model file names' {
         $models = New-BaseModels
         $models[1].FileName = 'CLASSIFIER.tflite'
         $models[1].Sha256 = $models[0].Sha256
         Write-FixtureManifest $models
         $output = New-CaseOutput 'duplicate-name'
+        $result = Invoke-FixtureFetch @('-SourceDirectory', $script:SourceRoot, '-OutputDirectory', $output)
+        Assert-ExitCode $result $false
+        Assert-NoTemporaryFiles $output
+    }
+
+    Invoke-Test 'manifest property keys are case-sensitive' {
+        Write-FixtureManifest (New-BaseModels)
+        $manifest = [System.IO.File]::ReadAllText($script:ManifestPath)
+        $manifest = $manifest.Replace('image_classifier.file=', 'Image_Classifier.file=')
+        [System.IO.File]::WriteAllText(
+            $script:ManifestPath,
+            $manifest,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $output = New-CaseOutput 'key-case'
         $result = Invoke-FixtureFetch @('-SourceDirectory', $script:SourceRoot, '-OutputDirectory', $output)
         Assert-ExitCode $result $false
         Assert-NoTemporaryFiles $output

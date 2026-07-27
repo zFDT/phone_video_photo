@@ -22,6 +22,30 @@ function Resolve-RepositoryPath {
     return [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $Path))
 }
 
+function Test-WindowsModelFileName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FileName) -or
+        -not $FileName.EndsWith('.tflite', [System.StringComparison]::Ordinal) -or
+        $FileName.Contains(':') -or
+        $FileName.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+        [System.IO.Path]::IsPathRooted($FileName) -or
+        [System.IO.Path]::GetFileName($FileName) -ne $FileName) {
+        return $false
+    }
+
+    $deviceStem = $FileName.Substring(0, $FileName.IndexOf('.'))
+    return -not [System.Text.RegularExpressions.Regex]::IsMatch(
+        $deviceStem,
+        '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+}
+
 function Read-ModelManifest {
     param(
         [Parameter(Mandatory = $true)]
@@ -32,7 +56,9 @@ function Read-ModelManifest {
         throw "Model manifest does not exist: $ManifestPath"
     }
 
-    $properties = @{}
+    $properties = [System.Collections.Generic.Dictionary[string, string]]::new(
+        [System.StringComparer]::Ordinal
+    )
     foreach ($line in [System.IO.File]::ReadAllLines($ManifestPath)) {
         $trimmedLine = $line.Trim()
         if ($trimmedLine.Length -eq 0 -or $trimmedLine.StartsWith('#')) {
@@ -53,12 +79,16 @@ function Read-ModelManifest {
     }
 
     $modelPrefixes = @('image_classifier', 'object_detector', 'image_embedder')
-    $requiredKeys = @()
+    $requiredKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
     $models = foreach ($prefix in $modelPrefixes) {
         $fileKey = "$prefix.file"
         $shaKey = "$prefix.sha256"
         $urlKey = "$prefix.url"
-        $requiredKeys += @($fileKey, $shaKey, $urlKey)
+        foreach ($key in @($fileKey, $shaKey, $urlKey)) {
+            $requiredKeys.Add($key) | Out-Null
+        }
 
         foreach ($key in @($fileKey, $shaKey, $urlKey)) {
             if (-not $properties.ContainsKey($key)) {
@@ -73,11 +103,8 @@ function Read-ModelManifest {
         if ($fileName.Equals('model-manifest.properties', [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Reserved model file name: $fileName"
         }
-        if ([string]::IsNullOrWhiteSpace($fileName) -or
-            [System.IO.Path]::IsPathRooted($fileName) -or
-            [System.IO.Path]::GetFileName($fileName) -ne $fileName -or
-            -not $fileName.EndsWith('.tflite', [System.StringComparison]::Ordinal)) {
-            throw "Model file name must be a single basename with a lowercase .tflite extension: $fileName"
+        if (-not (Test-WindowsModelFileName -FileName $fileName)) {
+            throw "Model file name must be a regular Windows basename with a lowercase .tflite extension: $fileName"
         }
         if ($sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
             throw "$shaKey must be a 64-character hexadecimal value"
@@ -98,7 +125,7 @@ function Read-ModelManifest {
     }
 
     foreach ($key in $properties.Keys) {
-        if ($key -notin $requiredKeys) {
+        if (-not $requiredKeys.Contains($key)) {
             throw "Model manifest contains an unknown property: $key"
         }
     }

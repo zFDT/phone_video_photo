@@ -27,9 +27,13 @@ class ModelAssetCatalog private constructor(
 
     companion object {
         private val sha256Pattern = Regex("^[0-9A-Fa-f]{64}$")
+        private val windowsInvalidFileNameChars =
+            setOf('<', '>', ':', '"', '/', '\\', '|', '?', '*') + (0..31).map(Int::toChar)
+        private val windowsReservedDeviceStem =
+            Regex("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", RegexOption.IGNORE_CASE)
 
         /**
-         * 严格解析模型清单；模型文件名只接受小写 `.tflite` 扩展名的单一 basename。
+         * 严格解析模型清单；模型文件名只接受 Windows 普通文件名且使用小写 `.tflite` 扩展名。
          *
          * [input] 由调用方持有，本方法不会关闭该流。
          */
@@ -49,7 +53,7 @@ class ModelAssetCatalog private constructor(
                 val url = properties.requiredValue("$prefix.url")
 
                 require(fileName.isSafeModelFileName()) {
-                    "$prefix.file 必须为使用小写 .tflite 扩展名的单一文件名"
+                    "$prefix.file 必须为使用小写 .tflite 扩展名的 Windows 普通文件名"
                 }
                 require(sha256Pattern.matches(sha256)) { "$prefix.sha256 必须为 64 位十六进制" }
                 require(url.isHttpsUrl()) { "$prefix.url 必须为有效的 HTTPS URL" }
@@ -92,9 +96,8 @@ class ModelAssetCatalog private constructor(
         private fun String.isSafeModelFileName(): Boolean =
             isNotBlank() &&
                 endsWith(".tflite") &&
-                !contains('/') &&
-                !contains('\\') &&
-                !contains(':') &&
+                none { it in windowsInvalidFileNameChars } &&
+                !windowsReservedDeviceStem.matches(substringBefore('.')) &&
                 !File(this).isAbsolute &&
                 File(this).name == this
 

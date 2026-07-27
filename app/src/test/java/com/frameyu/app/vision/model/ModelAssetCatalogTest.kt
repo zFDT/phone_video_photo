@@ -112,6 +112,11 @@ class ModelAssetCatalogTest {
             "model.bin",
             "model.TFLITE",
             "model-manifest.properties",
+            "model:stream.tflite",
+            "model?.tflite",
+            "CON.tflite",
+            "cOm1.tflite",
+            "LpT9.tflite",
         )
 
         invalidFileNames.forEach { fileName ->
