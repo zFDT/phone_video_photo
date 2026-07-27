@@ -350,12 +350,19 @@ private suspend fun exportMotionPhotoSelected(
     cropRect: CropRect?,
 ): String {
     var completedCount = 0
+    var containerCount = 0
     return try {
         candidates.forEach { candidate ->
-            exporter.exportCandidate(media, candidate, clipDurationMillis, cropRect)
+            if (exporter.exportCandidate(media, candidate, clipDurationMillis, cropRect).isMotionPhotoContainer) {
+                containerCount++
+            }
             completedCount++
         }
-        "已导出 $completedCount 组动态照片兜底文件"
+        if (containerCount == completedCount) {
+            "已导出 $completedCount 组标准动态照片"
+        } else {
+            "已导出 $containerCount 组标准动态照片，${completedCount - containerCount} 组静态图 + MP4 兜底"
+        }
     } catch (error: Throwable) {
         "已导出 $completedCount/${candidates.size} 组：${error.message ?: "部分失败"}"
     }

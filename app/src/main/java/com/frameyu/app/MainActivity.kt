@@ -130,6 +130,7 @@ class MainActivity : ComponentActivity() {
                                 clipExporter = VideoClipExporter(this@MainActivity),
                                 gifExporter = GifExporter(this@MainActivity),
                                 motionPhotoExporter = MotionPhotoExporter(
+                                    context = this@MainActivity,
                                     stillImageExporter = StillImageExporter(this@MainActivity),
                                     clipExporter = VideoClipExporter(this@MainActivity),
                                 ),
