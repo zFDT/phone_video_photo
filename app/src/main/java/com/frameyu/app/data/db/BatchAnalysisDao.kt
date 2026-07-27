@@ -1,5 +1,6 @@
 package com.frameyu.app.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -34,15 +35,24 @@ abstract class BatchAnalysisDao {
         return batchId
     }
 
-    suspend fun nextRunnableItems(batchId: Long, limit: Int): List<AnalysisWorkItemEntity> {
+    suspend fun nextRunnableItems(batchId: Long, limit: Int): List<AnalysisWorkItemEntity> =
+        nextRunnableItems(batchId, afterId = 0L, limit = limit)
+
+    suspend fun nextRunnableItems(
+        batchId: Long,
+        afterId: Long,
+        limit: Int,
+    ): List<AnalysisWorkItemEntity> {
+        require(afterId >= 0L) { "afterId 不能为负数" }
         require(limit > 0) { "limit 必须大于 0" }
-        return queryNextRunnableItems(batchId, limit)
+        return queryNextRunnableItems(batchId, afterId, limit)
     }
 
     @Query(
         """
         SELECT * FROM analysis_work_items
         WHERE batch_id = :batchId
+          AND id > :afterId
           AND status IN ('PENDING', 'RETRYABLE_FAILED')
         ORDER BY id
         LIMIT :limit
@@ -50,6 +60,7 @@ abstract class BatchAnalysisDao {
     )
     protected abstract suspend fun queryNextRunnableItems(
         batchId: Long,
+        afterId: Long,
         limit: Int,
     ): List<AnalysisWorkItemEntity>
 
@@ -160,11 +171,210 @@ abstract class BatchAnalysisDao {
           AND status = 'RUNNING'
         """
     )
-    abstract suspend fun recoverInterruptedItems(
+    protected abstract suspend fun recoverInterruptedItemsInternal(
         batchId: Long,
         message: String,
         updatedAtMillis: Long,
     ): Int
+
+    @Query("SELECT status FROM analysis_batches WHERE id = :batchId")
+    protected abstract suspend fun queryBatchStatus(batchId: Long): String?
+
+    suspend fun batchStatus(batchId: Long): String {
+        require(batchId > 0L) { "批次 ID 必须大于 0" }
+        return requireNotNull(queryBatchStatus(batchId)) { "批次不存在：$batchId" }
+    }
+
+    @Transaction
+    open suspend fun recoverInterruptedItems(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ): Int {
+        batchStatus(batchId)
+        return recoverInterruptedItemsInternal(batchId, message, updatedAtMillis)
+    }
+
+    @Query(
+        """
+        UPDATE analysis_batches
+        SET status = :status,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :batchId
+        """
+    )
+    protected abstract suspend fun updateBatchStatusInternal(
+        batchId: Long,
+        status: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Transaction
+    open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long) {
+        val status = batchStatus(batchId)
+        check(status !in setOf("PAUSED", "CANCELLED")) {
+            "批次 id=$batchId 当前状态不允许运行：$status"
+        }
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, "RUNNING", updatedAtMillis),
+            batchId,
+            "标记运行",
+        )
+    }
+
+    @Query(
+        """
+        SELECT COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0)
+                   AS completed,
+               COALESCE(SUM(CASE WHEN status = 'RETRYABLE_FAILED' THEN 1 ELSE 0 END), 0)
+                   AS retryable_failed,
+               COALESCE(SUM(CASE WHEN status = 'PERMANENT_FAILED' THEN 1 ELSE 0 END), 0)
+                   AS permanent_failed,
+               COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0)
+                   AS pending,
+               COALESCE(SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END), 0)
+                   AS running,
+               COALESCE(SUM(CASE WHEN status = 'PAUSED' THEN 1 ELSE 0 END), 0)
+                   AS paused,
+               COALESCE(SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END), 0)
+                   AS cancelled
+        FROM analysis_work_items
+        WHERE batch_id = :batchId
+        """
+    )
+    protected abstract suspend fun queryBatchCounts(batchId: Long): BatchAnalysisCounts
+
+    suspend fun batchCounts(batchId: Long): BatchAnalysisCounts {
+        batchStatus(batchId)
+        return queryBatchCounts(batchId)
+    }
+
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = 'PAUSED',
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('PENDING', 'RETRYABLE_FAILED')
+        """
+    )
+    protected abstract suspend fun pauseRunnableItems(
+        batchId: Long,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Transaction
+    open suspend fun pauseBatch(batchId: Long, updatedAtMillis: Long) {
+        batchStatus(batchId)
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, "PAUSED", updatedAtMillis),
+            batchId,
+            "暂停",
+        )
+        pauseRunnableItems(batchId, updatedAtMillis)
+    }
+
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = CASE
+                WHEN status = 'PAUSED' THEN 'PENDING'
+                ELSE 'RETRYABLE_FAILED'
+            END,
+            error_message = CASE
+                WHEN status = 'RUNNING' THEN :interruptedMessage
+                ELSE error_message
+            END,
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('PAUSED', 'RUNNING')
+        """
+    )
+    protected abstract suspend fun resumeItems(
+        batchId: Long,
+        interruptedMessage: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Transaction
+    open suspend fun resumeBatch(
+        batchId: Long,
+        interruptedMessage: String,
+        updatedAtMillis: Long,
+    ) {
+        batchStatus(batchId)
+        resumeItems(batchId, interruptedMessage, updatedAtMillis)
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, "QUEUED", updatedAtMillis),
+            batchId,
+            "恢复",
+        )
+    }
+
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = 'CANCELLED',
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('PENDING', 'RUNNING', 'PAUSED', 'RETRYABLE_FAILED')
+        """
+    )
+    protected abstract suspend fun cancelUnfinishedItems(
+        batchId: Long,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Transaction
+    open suspend fun cancelBatch(batchId: Long, updatedAtMillis: Long) {
+        batchStatus(batchId)
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, "CANCELLED", updatedAtMillis),
+            batchId,
+            "取消",
+        )
+        cancelUnfinishedItems(batchId, updatedAtMillis)
+    }
+
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = 'PENDING',
+            error_message = NULL,
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')
+        """
+    )
+    protected abstract suspend fun resetFailedItems(
+        batchId: Long,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Transaction
+    open suspend fun retryFailures(batchId: Long, updatedAtMillis: Long) {
+        batchStatus(batchId)
+        resetFailedItems(batchId, updatedAtMillis)
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, "QUEUED", updatedAtMillis),
+            batchId,
+            "重试失败项",
+        )
+    }
+
+    @Transaction
+    open suspend fun finishBatch(batchId: Long, status: String, updatedAtMillis: Long) {
+        require(status in setOf("COMPLETED", "NEEDS_ATTENTION")) {
+            "批次最终状态不受支持：$status"
+        }
+        batchStatus(batchId)
+        checkBatchUpdated(
+            updateBatchStatusInternal(batchId, status, updatedAtMillis),
+            batchId,
+            "结束",
+        )
+    }
 
     @Query(
         """
@@ -441,4 +651,24 @@ abstract class BatchAnalysisDao {
             "无法对工作项 id=$itemId 执行$operation：工作项不存在或状态不允许"
         }
     }
+
+    private fun checkBatchUpdated(updatedRows: Int, batchId: Long, operation: String) {
+        check(updatedRows == 1) {
+            "无法对批次 id=$batchId 执行$operation：批次不存在"
+        }
+    }
 }
+
+/** Runner 所需的稳定批次计数快照。 */
+data class BatchAnalysisCounts(
+    val total: Int,
+    val completed: Int,
+    @ColumnInfo(name = "retryable_failed")
+    val retryableFailed: Int,
+    @ColumnInfo(name = "permanent_failed")
+    val permanentFailed: Int,
+    val pending: Int,
+    val running: Int,
+    val paused: Int,
+    val cancelled: Int,
+)

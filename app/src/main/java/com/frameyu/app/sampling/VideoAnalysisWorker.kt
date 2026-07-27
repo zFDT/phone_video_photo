@@ -86,14 +86,16 @@ class VideoAnalysisWorker(
 }
 
 class VideoAnalysisWorkerFactory(
-    private val runner: VideoAnalysisWorkerRunner,
+    private val runnerProvider: () -> VideoAnalysisWorkerRunner,
 ) : WorkerFactory() {
+    constructor(runner: VideoAnalysisWorkerRunner) : this({ runner })
+
     override fun createWorker(
         appContext: Context,
         workerClassName: String,
         workerParameters: WorkerParameters,
     ): ListenableWorker? = if (workerClassName == VideoAnalysisWorker::class.java.name) {
-        VideoAnalysisWorker(appContext, workerParameters, runner)
+        VideoAnalysisWorker(appContext, workerParameters, runnerProvider())
     } else {
         null
     }
