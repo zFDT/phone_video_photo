@@ -38,6 +38,7 @@ fun LibraryScreen(
     onCancelBatchAnalysis: () -> Unit = {},
     onOpenCandidates: (MediaAssetEntity) -> Unit = {},
     onOpenOrganizer: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val isScanning = uiState.scanState is MediaScanState.Scanning
@@ -157,6 +158,12 @@ fun LibraryScreen(
             onClick = onOpenOrganizer,
         ) {
             Text(text = "相册整理")
+        }
+        OutlinedButton(
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+            onClick = onOpenSettings,
+        ) {
+            Text(text = "设置")
         }
     }
 }

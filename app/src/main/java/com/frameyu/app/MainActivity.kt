@@ -36,6 +36,9 @@ import com.frameyu.app.export.MotionPhotoExporter
 import com.frameyu.app.organize.DuplicateDetector
 import com.frameyu.app.organize.OrganizerRepository
 import com.frameyu.app.ui.organize.OrganizerScreen
+import com.frameyu.app.settings.SettingsSnapshot
+import com.frameyu.app.settings.SettingsStore
+import com.frameyu.app.ui.settings.SettingsScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -60,6 +63,11 @@ class MainActivity : ComponentActivity() {
     private var selectedCandidateMedia = mutableStateOf<MediaAssetEntity?>(null)
     private var selectedCandidate = mutableStateOf<AnalysisCandidateEntity?>(null)
     private var showOrganizer = mutableStateOf(false)
+    private var showSettings = mutableStateOf(false)
+    private var settingsSnapshot = mutableStateOf(SettingsSnapshot())
+    private val settingsStore by lazy {
+        SettingsStore(getSharedPreferences(SETTINGS_PREFERENCES, MODE_PRIVATE))
+    }
     private val organizerRepository by lazy {
         OrganizerRepository(
             detector = DuplicateDetector(),
@@ -77,6 +85,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission()
+        settingsSnapshot.value = settingsStore.read()
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -87,6 +96,15 @@ class MainActivity : ComponentActivity() {
                             repository = organizerRepository,
                             onBack = { showOrganizer.value = false },
                         )
+                    } else if (candidateMedia == null && showSettings.value) {
+                        SettingsScreen(
+                            settings = settingsSnapshot.value,
+                            onSettingsChanged = { settings ->
+                                settingsSnapshot.value = settings
+                                settingsStore.save(settings)
+                            },
+                            onBack = { showSettings.value = false },
+                        )
                     } else if (candidateMedia == null) {
                         LibraryScreen(
                             viewModel = libraryViewModel,
@@ -95,6 +113,7 @@ class MainActivity : ComponentActivity() {
                             onCancelBatchAnalysis = libraryViewModel::cancelBatchVideoAnalysis,
                             onOpenCandidates = { selectedCandidateMedia.value = it },
                             onOpenOrganizer = { showOrganizer.value = true },
+                            onOpenSettings = { showSettings.value = true },
                             hasMediaReadPermission = hasMediaPermission.value,
                             onRequestMediaReadPermission = ::requestMediaReadPermission,
                             onSelectMedia = {
@@ -169,5 +188,9 @@ class MainActivity : ComponentActivity() {
                 contentResolver.delete(uri, null, null)
             }
         }
+    }
+
+    private companion object {
+        const val SETTINGS_PREFERENCES = "frameyu-settings"
     }
 }

@@ -21,6 +21,17 @@ import java.util.Locale
 
 data class ClipWindow(val startMillis: Long, val endMillis: Long)
 
+internal enum class VideoExportStrategy {
+    NATIVE_MUX,
+}
+
+internal fun requireVideoExportStrategy(cropRect: CropRect?): VideoExportStrategy {
+    if (cropRect != null) {
+        throw UnsupportedOperationException("MP4 视频级裁切当前不支持")
+    }
+    return VideoExportStrategy.NATIVE_MUX
+}
+
 internal fun createClipWindow(
     centerMillis: Long,
     durationMillis: Long,
@@ -42,7 +53,9 @@ class VideoClipExporter(private val context: Context) {
         media: MediaAssetEntity,
         candidate: AnalysisCandidateEntity,
         clipDurationMillis: Long = DEFAULT_CLIP_DURATION_MILLIS,
+        cropRect: CropRect? = null,
     ): Uri = withContext(Dispatchers.IO) {
+        requireVideoExportStrategy(cropRect)
         val window = createClipWindow(candidate.timestampMillis, media.durationMillis, clipDurationMillis)
         val temporaryFile = File.createTempFile("frameyu-clip-", ".mp4", context.cacheDir)
         try {

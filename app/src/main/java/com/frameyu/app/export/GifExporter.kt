@@ -15,6 +15,36 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.math.roundToInt
+
+internal data class PixelCropBounds(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+)
+
+internal fun calculateCropBounds(
+    width: Int,
+    height: Int,
+    cropRect: CropRect?,
+): PixelCropBounds {
+    require(width > 0 && height > 0) { "帧尺寸必须大于 0" }
+    if (cropRect == null) {
+        return PixelCropBounds(left = 0, top = 0, right = width, bottom = height)
+    }
+
+    val bounds = PixelCropBounds(
+        left = (cropRect.left * width).roundToInt(),
+        top = (cropRect.top * height).roundToInt(),
+        right = (cropRect.right * width).roundToInt(),
+        bottom = (cropRect.bottom * height).roundToInt(),
+    )
+    require(bounds.right > bounds.left && bounds.bottom > bounds.top) {
+        "裁切区域在当前帧分辨率下为空"
+    }
+    return bounds
+}
 
 internal fun createGifFrameTimestamps(window: ClipWindow, fps: Int = GifExporter.DEFAULT_FPS): List<Long> {
     require(fps > 0) { "GIF 帧率必须大于 0" }
@@ -31,18 +61,19 @@ class GifExporter(private val context: Context) {
         media: MediaAssetEntity,
         candidate: AnalysisCandidateEntity,
         clipDurationMillis: Long = VideoClipExporter.DEFAULT_CLIP_DURATION_MILLIS,
+        cropRect: CropRect? = null,
     ): Uri = withContext(Dispatchers.IO) {
         val window = createClipWindow(candidate.timestampMillis, media.durationMillis, clipDurationMillis)
         val temporaryFile = File.createTempFile("frameyu-gif-", ".gif", context.cacheDir)
         try {
-            encodeGif(media.uri, window, temporaryFile)
+            encodeGif(media.uri, window, temporaryFile, cropRect)
             publishGif(media, candidate, temporaryFile)
         } finally {
             temporaryFile.delete()
         }
     }
 
-    private fun encodeGif(uri: String, window: ClipWindow, destination: File) {
+    private fun encodeGif(uri: String, window: ClipWindow, destination: File, cropRect: CropRect?) {
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, Uri.parse(uri))
@@ -54,8 +85,10 @@ class GifExporter(private val context: Context) {
                             timestamp * 1_000L,
                             MediaMetadataRetriever.OPTION_CLOSEST,
                         ) ?: continue
-                        val frame = scaleFrame(source)
-                        if (frame !== source) source.recycle()
+                        val croppedFrame = cropFrame(source, cropRect)
+                        if (croppedFrame !== source) source.recycle()
+                        val frame = scaleFrame(croppedFrame)
+                        if (frame !== croppedFrame) croppedFrame.recycle()
                         try {
                             if (encoder == null) {
                                 encoder = GifSequenceEncoder(output, frame.width, frame.height)
@@ -87,6 +120,22 @@ class GifExporter(private val context: Context) {
             (source.width * scale).toInt().coerceAtLeast(1),
             (source.height * scale).toInt().coerceAtLeast(1),
             true,
+        )
+    }
+
+    private fun cropFrame(source: Bitmap, cropRect: CropRect?): Bitmap {
+        val bounds = calculateCropBounds(source.width, source.height, cropRect)
+        if (bounds.left == 0 && bounds.top == 0 &&
+            bounds.right == source.width && bounds.bottom == source.height
+        ) {
+            return source
+        }
+        return Bitmap.createBitmap(
+            source,
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
         )
     }
 

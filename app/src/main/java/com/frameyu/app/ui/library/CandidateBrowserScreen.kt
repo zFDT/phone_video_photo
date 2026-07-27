@@ -203,6 +203,7 @@ fun CandidateBrowserScreen(
                 selectedCount = selectedCandidates.size,
                 clipDurationMillis = clipDurationMillis,
                 enabled = !isExporting,
+                mp4Enabled = !isExporting && cropMode == 0,
                 onExportJpeg = {
                     scope.launch {
                         isExporting = true
@@ -216,7 +217,12 @@ fun CandidateBrowserScreen(
                     scope.launch {
                         isExporting = true
                         exportMessage = exportSelected(selectedCandidates) { candidate ->
-                            gifExporter.exportCandidate(media, candidate, clipDurationMillis)
+                            gifExporter.exportCandidate(
+                                media,
+                                candidate,
+                                clipDurationMillis,
+                                cropRectForMode(cropMode),
+                            )
                         }
                         isExporting = false
                     }
@@ -225,7 +231,12 @@ fun CandidateBrowserScreen(
                     scope.launch {
                         isExporting = true
                         exportMessage = exportSelected(selectedCandidates) { candidate ->
-                            clipExporter.exportCandidate(media, candidate, clipDurationMillis)
+                            clipExporter.exportCandidate(
+                                media,
+                                candidate,
+                                clipDurationMillis,
+                                cropRectForMode(cropMode),
+                            )
                         }
                         isExporting = false
                     }
@@ -303,6 +314,7 @@ private fun BatchExportBar(
     selectedCount: Int,
     clipDurationMillis: Long,
     enabled: Boolean,
+    mp4Enabled: Boolean,
     onExportJpeg: () -> Unit,
     onExportGif: () -> Unit,
     onExportMp4: () -> Unit,
@@ -320,8 +332,8 @@ private fun BatchExportBar(
             Button(onClick = onExportGif, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text(text = "GIF")
             }
-            Button(onClick = onExportMp4, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text(text = "${formatDurationSeconds(clipDurationMillis)} MP4")
+            Button(onClick = onExportMp4, enabled = mp4Enabled, modifier = Modifier.weight(1f)) {
+                Text(text = if (mp4Enabled) "${formatDurationSeconds(clipDurationMillis)} MP4" else "MP4需原始构图")
             }
         }
         TextButton(onClick = onExportMotionPhoto, enabled = enabled) {
