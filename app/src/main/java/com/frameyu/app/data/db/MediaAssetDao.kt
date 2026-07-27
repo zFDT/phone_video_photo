@@ -23,6 +23,9 @@ interface MediaAssetDao {
     @Query("SELECT * FROM media_assets WHERE mime_type LIKE 'video/%' ORDER BY taken_at_millis DESC")
     fun observeVideos(): Flow<List<MediaAssetEntity>>
 
+    @Query("SELECT * FROM media_assets ORDER BY taken_at_millis DESC")
+    fun observeAll(): Flow<List<MediaAssetEntity>>
+
     @Upsert
     suspend fun upsertAll(assets: List<MediaAssetEntity>)
 }

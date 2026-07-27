@@ -43,6 +43,8 @@ import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.export.GifExporter
+import com.frameyu.app.export.CropRect
+import com.frameyu.app.export.MotionPhotoExporter
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,7 @@ fun CandidateBrowserScreen(
     exporter: StillImageExporter,
     clipExporter: VideoClipExporter,
     gifExporter: GifExporter,
+    motionPhotoExporter: MotionPhotoExporter,
     onOpenDetail: (AnalysisCandidateEntity) -> Unit = {},
     onBack: () -> Unit,
 ) {
@@ -65,6 +68,7 @@ fun CandidateBrowserScreen(
     val scope = rememberCoroutineScope()
     var sortByScore by rememberSaveable { mutableStateOf(true) }
     var clipDurationMillis by rememberSaveable { mutableStateOf(3_000L) }
+    var cropMode by rememberSaveable { mutableStateOf(0) }
     var exportMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var isExporting by rememberSaveable { mutableStateOf(false) }
     val sortedCandidates = sortCandidates(candidates, sortByScore)
@@ -102,6 +106,21 @@ fun CandidateBrowserScreen(
             }
             TextButton(onClick = { setAllSelected(true) }, enabled = candidates.isNotEmpty()) {
                 Text(text = "全选")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = "静态构图", style = MaterialTheme.typography.bodySmall)
+            listOf("原始", "1:1", "16:9").forEachIndexed { index, label ->
+                TextButton(
+                    onClick = { cropMode = index },
+                    enabled = cropMode != index,
+                ) {
+                    Text(text = label)
+                }
             }
         }
         Text(
@@ -188,7 +207,7 @@ fun CandidateBrowserScreen(
                     scope.launch {
                         isExporting = true
                         exportMessage = exportSelected(selectedCandidates) { candidate ->
-                            exporter.exportCandidate(media, candidate)
+                            exporter.exportCandidate(media, candidate, cropRect = cropRectForMode(cropMode))
                         }
                         isExporting = false
                     }
@@ -211,9 +230,28 @@ fun CandidateBrowserScreen(
                         isExporting = false
                     }
                 },
+                onExportMotionPhoto = {
+                    scope.launch {
+                        isExporting = true
+                        exportMessage = exportMotionPhotoSelected(
+                            media = media,
+                            candidates = selectedCandidates,
+                            exporter = motionPhotoExporter,
+                            clipDurationMillis = clipDurationMillis,
+                            cropRect = cropRectForMode(cropMode),
+                        )
+                        isExporting = false
+                    }
+                },
             )
         }
     }
+}
+
+private fun cropRectForMode(mode: Int): CropRect? = when (mode) {
+    1 -> CropRect.fromCenter(1f)
+    2 -> CropRect.fromCenter(16f / 9f)
+    else -> null
 }
 
 @Composable
@@ -268,6 +306,7 @@ private fun BatchExportBar(
     onExportJpeg: () -> Unit,
     onExportGif: () -> Unit,
     onExportMp4: () -> Unit,
+    onExportMotionPhoto: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(text = "已选择 $selectedCount 帧", style = MaterialTheme.typography.titleSmall)
@@ -285,6 +324,28 @@ private fun BatchExportBar(
                 Text(text = "${formatDurationSeconds(clipDurationMillis)} MP4")
             }
         }
+        TextButton(onClick = onExportMotionPhoto, enabled = enabled) {
+            Text(text = "动态照片（静态图 + MP4 兜底）")
+        }
+    }
+}
+
+private suspend fun exportMotionPhotoSelected(
+    media: MediaAssetEntity,
+    candidates: List<AnalysisCandidateEntity>,
+    exporter: MotionPhotoExporter,
+    clipDurationMillis: Long,
+    cropRect: CropRect?,
+): String {
+    var completedCount = 0
+    return try {
+        candidates.forEach { candidate ->
+            exporter.exportCandidate(media, candidate, clipDurationMillis, cropRect)
+            completedCount++
+        }
+        "已导出 $completedCount 组动态照片兜底文件"
+    } catch (error: Throwable) {
+        "已导出 $completedCount/${candidates.size} 组：${error.message ?: "部分失败"}"
     }
 }
 

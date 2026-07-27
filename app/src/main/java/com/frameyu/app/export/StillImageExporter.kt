@@ -24,6 +24,11 @@ class StillImageExporter(private val context: Context) {
         cropRect: CropRect? = null,
     ): Uri = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
+        val sourceBitmap = retrieveFrame(media.uri, candidate.timestampMillis)
+            ?: error("无法读取候选帧画面")
+        val canPreserveHdr = format == StillImageFormat.JPEG &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            media.isHdr && sourceBitmap.hasGainmap()
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, buildStillImageName(media, candidate, format))
             put(MediaStore.Images.Media.MIME_TYPE, format.mimeType)
@@ -34,6 +39,7 @@ class StillImageExporter(private val context: Context) {
                     width = media.width,
                     height = media.height,
                     rotationDegrees = media.rotationDegrees,
+                    isHdr = canPreserveHdr,
                 ),
             )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -42,11 +48,12 @@ class StillImageExporter(private val context: Context) {
             }
         }
         val destination = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            ?: error("无法创建相册导出文件")
+            ?: run {
+                sourceBitmap.recycle()
+                error("无法创建相册导出文件")
+            }
 
         try {
-            val sourceBitmap = retrieveFrame(media.uri, candidate.timestampMillis)
-                ?: error("无法读取候选帧画面")
             val bitmap = cropBitmap(sourceBitmap, cropRect)
             try {
                 resolver.openOutputStream(destination)?.use { output ->

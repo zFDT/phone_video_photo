@@ -69,13 +69,13 @@ class AlbumClassifierTest {
     }
 
     @Test
-    fun duplicateKeyIncludesStableIdentityFields() {
+    fun duplicateKeyIncludesStableMediaFieldsButNotUri() {
         val first = media(uri = "content://media/DCIM/a.jpg")
         val differentSize = first.copy(sizeBytes = first.sizeBytes + 1L)
         val differentUri = first.copy(uri = "content://media/DCIM/b.jpg")
 
         assertNotEquals(classifier.duplicateKey(first), classifier.duplicateKey(differentSize))
-        assertNotEquals(classifier.duplicateKey(first), classifier.duplicateKey(differentUri))
+        assertEquals(classifier.duplicateKey(first), classifier.duplicateKey(differentUri))
     }
 
     private fun media(

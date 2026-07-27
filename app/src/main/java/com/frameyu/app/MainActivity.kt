@@ -1,8 +1,11 @@
 package com.frameyu.app
 
+import android.content.ContentValues
+import android.net.Uri
 import android.os.Bundle
 import android.Manifest
 import android.os.Build
+import android.provider.MediaStore
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.ComponentActivity
@@ -29,6 +32,12 @@ import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.export.StillImageExporter
 import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
+import com.frameyu.app.export.MotionPhotoExporter
+import com.frameyu.app.organize.DuplicateDetector
+import com.frameyu.app.organize.OrganizerRepository
+import com.frameyu.app.ui.organize.OrganizerScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +59,13 @@ class MainActivity : ComponentActivity() {
     private var hasMediaPermission = mutableStateOf(false)
     private var selectedCandidateMedia = mutableStateOf<MediaAssetEntity?>(null)
     private var selectedCandidate = mutableStateOf<AnalysisCandidateEntity?>(null)
+    private var showOrganizer = mutableStateOf(false)
+    private val organizerRepository by lazy {
+        OrganizerRepository(
+            detector = DuplicateDetector(),
+            deleter = ::moveToSystemTrash,
+        )
+    }
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission() }
@@ -65,13 +81,20 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val candidateMedia = selectedCandidateMedia.value
-                    if (candidateMedia == null) {
+                    if (candidateMedia == null && showOrganizer.value) {
+                        OrganizerScreen(
+                            database = (application as FrameYuApplication).database,
+                            repository = organizerRepository,
+                            onBack = { showOrganizer.value = false },
+                        )
+                    } else if (candidateMedia == null) {
                         LibraryScreen(
                             viewModel = libraryViewModel,
                             onStartAnalysis = libraryViewModel::startVideoAnalysis,
                             onStartBatchAnalysis = libraryViewModel::startBatchVideoAnalysis,
                             onCancelBatchAnalysis = libraryViewModel::cancelBatchVideoAnalysis,
                             onOpenCandidates = { selectedCandidateMedia.value = it },
+                            onOpenOrganizer = { showOrganizer.value = true },
                             hasMediaReadPermission = hasMediaPermission.value,
                             onRequestMediaReadPermission = ::requestMediaReadPermission,
                             onSelectMedia = {
@@ -87,6 +110,10 @@ class MainActivity : ComponentActivity() {
                                 exporter = StillImageExporter(this@MainActivity),
                                 clipExporter = VideoClipExporter(this@MainActivity),
                                 gifExporter = GifExporter(this@MainActivity),
+                                motionPhotoExporter = MotionPhotoExporter(
+                                    stillImageExporter = StillImageExporter(this@MainActivity),
+                                    clipExporter = VideoClipExporter(this@MainActivity),
+                                ),
                                 onOpenDetail = { selectedCandidate.value = it },
                                 onBack = {
                                     selectedCandidate.value = null
@@ -125,5 +152,22 @@ class MainActivity : ComponentActivity() {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         permissionLauncher.launch(permissions)
+    }
+
+    private suspend fun moveToSystemTrash(uris: List<Uri>) = withContext(Dispatchers.IO) {
+        uris.forEach { uri ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentResolver.update(
+                    uri,
+                    ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_TRASHED, 1)
+                    },
+                    null,
+                    null,
+                )
+            } else {
+                contentResolver.delete(uri, null, null)
+            }
+        }
     }
 }

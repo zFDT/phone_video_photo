@@ -34,15 +34,16 @@ class AlbumClassifier(
         return if (categories.isEmpty()) setOf(AlbumCategory.OTHER) else categories
     }
 
-    /** 使用长度编码避免 URI 或路径中的分隔符造成重复键碰撞。 */
+    /** 使用媒体特征生成重复键，不包含 URI，允许识别不同路径下的同一份媒体。 */
     fun duplicateKey(asset: MediaAssetEntity): String = buildString {
         appendPart(asset.width.toString())
         appendPart(asset.height.toString())
         appendPart(asset.durationMillis.toString())
         appendPart(asset.sizeBytes.toString())
+        appendPart(asset.takenAtMillis.toString())
+        appendPart(asset.rotationDegrees.toString())
+        appendPart(asset.isHdr.toString())
         appendPart(asset.mimeType.trim().lowercase(Locale.ROOT))
-        appendPart(asset.relativePath)
-        appendPart(asset.uri)
     }
 
     private fun StringBuilder.appendPart(value: String?) {
