@@ -6,6 +6,7 @@
 
 # Gradle
 .gradle/
+.kotlin/
 build/
 */build/
 !gradle/wrapper/gradle-wrapper.jar
@@ -29,6 +30,9 @@ secrets.properties
 
 # Local analysis data and media samples
 .frameyu-cache/
+.codegraph/
+/module/
+/app/src/main/assets/models/*.tflite
 test-media/
 *.mp4
 *.mov
