@@ -63,10 +63,10 @@ data class AnalysisWorkItemEntity(
     @ColumnInfo(name = "analyzer_version")
     val analyzerVersion: String,
     @ColumnInfo(name = "next_timestamp_millis")
-    val nextTimestampMillis: Long,
-    val attempts: Int,
+    val nextTimestampMillis: Long = 0L,
+    val attempts: Int = 0,
     @ColumnInfo(name = "error_message")
-    val errorMessage: String?,
+    val errorMessage: String? = null,
     @ColumnInfo(name = "updated_at_millis")
     val updatedAtMillis: Long,
 )

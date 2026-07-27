@@ -15,6 +15,15 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class BatchAnalysisDaoTest {
     @Test
+    fun workItemUsesPlannedDefaults() {
+        val item = workItem(id = 10L, mediaAssetId = 1L, stage = "QUALITY")
+
+        assertEquals(0L, item.nextTimestampMillis)
+        assertEquals(0, item.attempts)
+        assertEquals(null, item.errorMessage)
+    }
+
+    @Test
     fun batchWorkItemsSupportCheckpointRetryAndProgress() = runBlocking {
         val database = createDatabase()
         try {
@@ -55,8 +64,8 @@ class BatchAnalysisDaoTest {
             dao.markRunning(itemId = 13L, updatedAtMillis = 130L)
             dao.failItem(
                 itemId = 13L,
-                status = "RETRYABLE_FAILED",
-                errorMessage = "模型暂不可用",
+                retryable = true,
+                message = "模型暂不可用",
                 updatedAtMillis = 140L,
             )
 
@@ -70,6 +79,106 @@ class BatchAnalysisDaoTest {
             assertEquals(0, progress.runningWorkItems)
             assertEquals(2, progress.pendingWorkItems)
             assertEquals(0, progress.failedWorkItems)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun stateChangesRejectIllegalSourcesAndMapFailureKinds() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            dao.createBatch(
+                batch = batch(),
+                items = listOf(
+                    workItem(21L, 1L, "QUALITY", status = "RUNNING"),
+                    workItem(22L, 1L, "QUALITY", status = "COMPLETED"),
+                    workItem(23L, 1L, "QUALITY", status = "PENDING"),
+                    workItem(24L, 1L, "QUALITY", status = "PERMANENT_FAILED"),
+                    workItem(26L, 2L, "QUALITY", status = "PENDING"),
+                    workItem(27L, 2L, "QUALITY", status = "PENDING"),
+                    workItem(28L, 2L, "QUALITY", status = "PENDING"),
+                ),
+            )
+
+            assertIllegalState { dao.markRunning(itemId = 21L, updatedAtMillis = 10L) }
+            assertIllegalState { dao.markRunning(itemId = 22L, updatedAtMillis = 10L) }
+
+            assertIllegalState {
+                dao.saveCheckpoint(itemId = 23L, nextTimestampMillis = 100L, updatedAtMillis = 10L)
+            }
+            assertIllegalState { dao.completeItem(itemId = 23L, updatedAtMillis = 10L) }
+            assertIllegalState {
+                dao.failItem(
+                    itemId = 23L,
+                    retryable = true,
+                    message = "仍在等待",
+                    updatedAtMillis = 10L,
+                )
+            }
+
+            assertIllegalState { dao.completeItem(itemId = 22L, updatedAtMillis = 10L) }
+            assertIllegalState {
+                dao.failItem(
+                    itemId = 22L,
+                    retryable = false,
+                    message = "已经完成",
+                    updatedAtMillis = 10L,
+                )
+            }
+            assertIllegalState { dao.completeItem(itemId = 24L, updatedAtMillis = 10L) }
+            assertIllegalState {
+                dao.failItem(
+                    itemId = 24L,
+                    retryable = false,
+                    message = "已经失败",
+                    updatedAtMillis = 10L,
+                )
+            }
+
+            dao.markRunning(itemId = 26L, updatedAtMillis = 20L)
+            dao.failItem(
+                itemId = 26L,
+                retryable = true,
+                message = " 临时故障 ",
+                updatedAtMillis = 30L,
+            )
+            assertWorkItem(
+                database = database,
+                itemId = 26L,
+                expectedStatus = "RETRYABLE_FAILED",
+                expectedAttempts = 1,
+                expectedNextTimestampMillis = 0L,
+                expectedErrorMessage = " 临时故障 ",
+            )
+
+            dao.markRunning(itemId = 27L, updatedAtMillis = 20L)
+            dao.failItem(
+                itemId = 27L,
+                retryable = false,
+                message = "不可恢复",
+                updatedAtMillis = 30L,
+            )
+            assertWorkItem(
+                database = database,
+                itemId = 27L,
+                expectedStatus = "PERMANENT_FAILED",
+                expectedAttempts = 1,
+                expectedNextTimestampMillis = 0L,
+                expectedErrorMessage = "不可恢复",
+            )
+
+            dao.markRunning(itemId = 28L, updatedAtMillis = 20L)
+            assertIllegalArgument {
+                dao.failItem(
+                    itemId = 28L,
+                    retryable = true,
+                    message = "   ",
+                    updatedAtMillis = 30L,
+                )
+            }
         } finally {
             database.close()
         }
@@ -110,16 +219,14 @@ class BatchAnalysisDaoTest {
         id: Long,
         mediaAssetId: Long,
         stage: String,
+        status: String = "PENDING",
     ) = AnalysisWorkItemEntity(
         id = id,
         batchId = 0L,
         mediaAssetId = mediaAssetId,
         stage = stage,
-        status = "PENDING",
-        analyzerVersion = "analyzer-v1",
-        nextTimestampMillis = 0L,
-        attempts = 0,
-        errorMessage = null,
+        status = status,
+        analyzerVersion = "analyzer-v$id",
         updatedAtMillis = 1L,
     )
 
@@ -144,15 +251,31 @@ class BatchAnalysisDaoTest {
         expectedStatus: String,
         expectedAttempts: Int,
         expectedNextTimestampMillis: Long,
+        expectedErrorMessage: String? = null,
     ) {
         database.openHelper.readableDatabase.query(
-            "SELECT status, attempts, next_timestamp_millis FROM analysis_work_items WHERE id = ?",
+            """
+            SELECT status, attempts, next_timestamp_millis, error_message
+            FROM analysis_work_items
+            WHERE id = ?
+            """.trimIndent(),
             arrayOf(itemId.toString()),
         ).use { cursor ->
             assertTrue(cursor.moveToFirst())
             assertEquals(expectedStatus, cursor.getString(0))
             assertEquals(expectedAttempts, cursor.getInt(1))
             assertEquals(expectedNextTimestampMillis, cursor.getLong(2))
+            assertEquals(expectedErrorMessage, cursor.getString(3))
         }
+    }
+
+    private suspend fun assertIllegalState(block: suspend () -> Unit) {
+        val failure = runCatching { block() }.exceptionOrNull()
+        assertTrue("应拒绝非法来源状态", failure is IllegalStateException)
+    }
+
+    private suspend fun assertIllegalArgument(block: suspend () -> Unit) {
+        val failure = runCatching { block() }.exceptionOrNull()
+        assertTrue("应拒绝非法参数", failure is IllegalArgumentException)
     }
 }
