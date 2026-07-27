@@ -152,6 +152,22 @@ abstract class BatchAnalysisDao {
 
     @Query(
         """
+        UPDATE analysis_work_items
+        SET status = 'RETRYABLE_FAILED',
+            error_message = :message,
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status = 'RUNNING'
+        """
+    )
+    abstract suspend fun recoverInterruptedItems(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
         SELECT b.*,
                COUNT(w.id) AS total_work_items,
                COALESCE(SUM(CASE WHEN w.status = 'COMPLETED' THEN 1 ELSE 0 END), 0)
@@ -172,8 +188,43 @@ abstract class BatchAnalysisDao {
     )
     abstract fun observeBatch(batchId: Long): Flow<AnalysisBatchWithProgress>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    abstract suspend fun upsertClassifications(results: List<MediaClassificationEntity>)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertClassifications(results: List<MediaClassificationEntity>)
+
+    @Query(
+        """
+        DELETE FROM media_classifications
+        WHERE media_asset_id = :mediaAssetId
+          AND timestamp_millis = :timestampMillis
+          AND model_sha256 = :modelSha256
+        """
+    )
+    protected abstract suspend fun deleteClassifications(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+    )
+
+    /** 对指定自然键的分类结果执行完整集合替换，输入行 ID 不会保留。 */
+    @Transaction
+    open suspend fun upsertClassifications(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+        results: List<MediaClassificationEntity>,
+    ) {
+        require(
+            results.all { result ->
+                result.mediaAssetId == mediaAssetId &&
+                    result.timestampMillis == timestampMillis &&
+                    result.modelSha256 == modelSha256
+            }
+        ) { "分类结果的自然键与替换目标不一致" }
+        deleteClassifications(mediaAssetId, timestampMillis, modelSha256)
+        if (results.isNotEmpty()) {
+            insertClassifications(results.map { it.copy(id = 0L) })
+        }
+    }
 
     @Query(
         """
@@ -190,8 +241,43 @@ abstract class BatchAnalysisDao {
         modelSha256: String,
     ): List<MediaClassificationEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    abstract suspend fun upsertDetections(results: List<MediaDetectionEntity>)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertDetections(results: List<MediaDetectionEntity>)
+
+    @Query(
+        """
+        DELETE FROM media_detections
+        WHERE media_asset_id = :mediaAssetId
+          AND timestamp_millis = :timestampMillis
+          AND model_sha256 = :modelSha256
+        """
+    )
+    protected abstract suspend fun deleteDetections(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+    )
+
+    /** 对指定自然键的检测结果执行完整集合替换，输入行 ID 不会保留。 */
+    @Transaction
+    open suspend fun upsertDetections(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+        results: List<MediaDetectionEntity>,
+    ) {
+        require(
+            results.all { result ->
+                result.mediaAssetId == mediaAssetId &&
+                    result.timestampMillis == timestampMillis &&
+                    result.modelSha256 == modelSha256
+            }
+        ) { "检测结果的自然键与替换目标不一致" }
+        deleteDetections(mediaAssetId, timestampMillis, modelSha256)
+        if (results.isNotEmpty()) {
+            insertDetections(results.map { it.copy(id = 0L) })
+        }
+    }
 
     @Query(
         """
@@ -208,8 +294,41 @@ abstract class BatchAnalysisDao {
         modelSha256: String,
     ): List<MediaDetectionEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    abstract suspend fun upsertFeatureReference(result: MediaFeatureReferenceEntity)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertFeatureReference(result: MediaFeatureReferenceEntity)
+
+    @Query(
+        """
+        UPDATE media_feature_references
+        SET cache_path = :cachePath,
+            dimension = :dimension
+        WHERE media_asset_id = :mediaAssetId
+          AND timestamp_millis = :timestampMillis
+          AND model_sha256 = :modelSha256
+        """
+    )
+    protected abstract suspend fun updateFeatureReference(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+        cachePath: String,
+        dimension: Int,
+    ): Int
+
+    /** 按自然键更新特征引用；调用方传入的行 ID 会被忽略。 */
+    @Transaction
+    open suspend fun upsertFeatureReference(result: MediaFeatureReferenceEntity) {
+        val updatedRows = updateFeatureReference(
+            mediaAssetId = result.mediaAssetId,
+            timestampMillis = result.timestampMillis,
+            modelSha256 = result.modelSha256,
+            cachePath = result.cachePath,
+            dimension = result.dimension,
+        )
+        if (updatedRows == 0) {
+            insertFeatureReference(result.copy(id = 0L))
+        }
+    }
 
     @Query(
         """
@@ -226,8 +345,50 @@ abstract class BatchAnalysisDao {
         modelSha256: String,
     ): MediaFeatureReferenceEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    abstract suspend fun upsertQualityResult(result: MediaQualityResultEntity)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    protected abstract suspend fun insertQualityResult(result: MediaQualityResultEntity)
+
+    @Query(
+        """
+        UPDATE media_quality_results
+        SET total_score = :totalScore,
+            sharpness_score = :sharpnessScore,
+            exposure_score = :exposureScore,
+            noise_score = :noiseScore,
+            composition_score = :compositionScore
+        WHERE media_asset_id = :mediaAssetId
+          AND timestamp_millis = :timestampMillis
+          AND analyzer_version = :analyzerVersion
+        """
+    )
+    protected abstract suspend fun updateQualityResult(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        analyzerVersion: String,
+        totalScore: Float,
+        sharpnessScore: Float,
+        exposureScore: Float,
+        noiseScore: Float,
+        compositionScore: Float,
+    ): Int
+
+    /** 按自然键更新质量结果；调用方传入的行 ID 会被忽略。 */
+    @Transaction
+    open suspend fun upsertQualityResult(result: MediaQualityResultEntity) {
+        val updatedRows = updateQualityResult(
+            mediaAssetId = result.mediaAssetId,
+            timestampMillis = result.timestampMillis,
+            analyzerVersion = result.analyzerVersion,
+            totalScore = result.totalScore,
+            sharpnessScore = result.sharpnessScore,
+            exposureScore = result.exposureScore,
+            noiseScore = result.noiseScore,
+            compositionScore = result.compositionScore,
+        )
+        if (updatedRows == 0) {
+            insertQualityResult(result.copy(id = 0L))
+        }
+    }
 
     @Query(
         """

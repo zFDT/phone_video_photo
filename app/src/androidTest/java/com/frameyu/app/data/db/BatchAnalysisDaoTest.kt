@@ -74,11 +74,14 @@ class BatchAnalysisDaoTest {
             assertEquals("RETRYABLE_FAILED", runnableItems[1].status)
             assertEquals("模型暂不可用", runnableItems[1].errorMessage)
             val progress = dao.observeBatch(batchId).first()
-            assertEquals(3, progress.totalWorkItems)
-            assertEquals(1, progress.completedWorkItems)
-            assertEquals(0, progress.runningWorkItems)
-            assertEquals(2, progress.pendingWorkItems)
-            assertEquals(0, progress.failedWorkItems)
+            val counts: List<Long> = listOf(
+                progress.totalWorkItems,
+                progress.completedWorkItems,
+                progress.runningWorkItems,
+                progress.pendingWorkItems,
+                progress.failedWorkItems,
+            )
+            assertEquals(listOf(3L, 1L, 0L, 2L, 0L), counts)
         } finally {
             database.close()
         }
@@ -191,6 +194,176 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun recoverInterruptedItemsPreservesCheckpointAndIsBatchScoped() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch(),
+                items = listOf(
+                    workItem(31L, 1L, "QUALITY"),
+                    workItem(32L, 2L, "CLASSIFICATION"),
+                ),
+            )
+            val otherBatchId = dao.createBatch(
+                batch = batch(),
+                items = listOf(workItem(33L, 1L, "EMBEDDING")),
+            )
+            dao.markRunning(itemId = 31L, updatedAtMillis = 10L)
+            dao.saveCheckpoint(itemId = 31L, nextTimestampMillis = 444L, updatedAtMillis = 20L)
+            dao.markRunning(itemId = 33L, updatedAtMillis = 10L)
+
+            val recovered = dao.recoverInterruptedItems(
+                batchId = batchId,
+                message = "进程中断",
+                updatedAtMillis = 30L,
+            )
+
+            assertEquals(1, recovered)
+            assertWorkItem(
+                database = database,
+                itemId = 31L,
+                expectedStatus = "RETRYABLE_FAILED",
+                expectedAttempts = 1,
+                expectedNextTimestampMillis = 444L,
+                expectedErrorMessage = "进程中断",
+            )
+            assertEquals(
+                listOf(31L, 32L),
+                dao.nextRunnableItems(batchId = batchId, limit = 10).map { it.id },
+            )
+            assertWorkItem(
+                database = database,
+                itemId = 33L,
+                expectedStatus = "RUNNING",
+                expectedAttempts = 1,
+                expectedNextTimestampMillis = 0L,
+            )
+            assertTrue(otherBatchId != batchId)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun classificationAndDetectionWritesReplaceCompleteNaturalKeySets() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val timestampMillis = 100L
+            val modelSha256 = "model-sha"
+
+            dao.upsertClassifications(
+                mediaAssetId = 1L,
+                timestampMillis = timestampMillis,
+                modelSha256 = modelSha256,
+                results = (0 until 5).map { rank ->
+                    classification(1L, timestampMillis, modelSha256, rank, label = "旧-$rank")
+                },
+            )
+            val mismatchFailure = runCatching {
+                dao.upsertClassifications(
+                    mediaAssetId = 1L,
+                    timestampMillis = timestampMillis,
+                    modelSha256 = modelSha256,
+                    results = listOf(classification(2L, timestampMillis, modelSha256, 0, "错键")),
+                )
+            }.exceptionOrNull()
+            assertTrue(mismatchFailure is IllegalArgumentException)
+            assertEquals(5, dao.getClassifications(1L, timestampMillis, modelSha256).size)
+
+            dao.upsertClassifications(
+                mediaAssetId = 1L,
+                timestampMillis = timestampMillis,
+                modelSha256 = modelSha256,
+                results = (0 until 2).map { rank ->
+                    classification(1L, timestampMillis, modelSha256, rank, label = "新-$rank")
+                },
+            )
+            assertEquals(
+                listOf("新-0", "新-1"),
+                dao.getClassifications(1L, timestampMillis, modelSha256).map { it.label },
+            )
+            dao.upsertClassifications(1L, timestampMillis, modelSha256, emptyList())
+            assertTrue(dao.getClassifications(1L, timestampMillis, modelSha256).isEmpty())
+
+            dao.upsertDetections(
+                mediaAssetId = 1L,
+                timestampMillis = timestampMillis,
+                modelSha256 = modelSha256,
+                results = (0 until 5).map { rank ->
+                    detection(1L, timestampMillis, modelSha256, rank, category = "旧-$rank")
+                },
+            )
+            dao.upsertDetections(
+                mediaAssetId = 1L,
+                timestampMillis = timestampMillis,
+                modelSha256 = modelSha256,
+                results = (0 until 2).map { rank ->
+                    detection(1L, timestampMillis, modelSha256, rank, category = "新-$rank")
+                },
+            )
+            assertEquals(
+                listOf("新-0", "新-1"),
+                dao.getDetections(1L, timestampMillis, modelSha256).map { it.category },
+            )
+            dao.upsertDetections(1L, timestampMillis, modelSha256, emptyList())
+            assertTrue(dao.getDetections(1L, timestampMillis, modelSha256).isEmpty())
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun featureAndQualityUpsertsKeepStableRowIds() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+
+            dao.upsertFeatureReference(
+                MediaFeatureReferenceEntity(
+                    id = 999L,
+                    mediaAssetId = 1L,
+                    timestampMillis = 200L,
+                    modelSha256 = "feature-model",
+                    cachePath = "first.cache",
+                    dimension = 128,
+                ),
+            )
+            val firstFeature = dao.getFeatureReference(1L, 200L, "feature-model")!!
+            dao.upsertFeatureReference(
+                firstFeature.copy(id = 888L, cachePath = "second.cache", dimension = 256),
+            )
+            val updatedFeature = dao.getFeatureReference(1L, 200L, "feature-model")!!
+            assertEquals(firstFeature.id, updatedFeature.id)
+            assertEquals("second.cache", updatedFeature.cachePath)
+            assertEquals(256, updatedFeature.dimension)
+
+            dao.upsertQualityResult(
+                qualityResult(
+                    id = 999L,
+                    mediaAssetId = 1L,
+                    timestampMillis = 300L,
+                    analyzerVersion = "quality-v1",
+                    totalScore = 0.4f,
+                ),
+            )
+            val firstQuality = dao.getQualityResult(1L, 300L, "quality-v1")!!
+            dao.upsertQualityResult(
+                firstQuality.copy(id = 888L, totalScore = 0.9f),
+            )
+            val updatedQuality = dao.getQualityResult(1L, 300L, "quality-v1")!!
+            assertEquals(firstQuality.id, updatedQuality.id)
+            assertEquals(0.9f, updatedQuality.totalScore)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun duplicateWorkItemIdentityIsRejected() = runBlocking {
         val database = createDatabase()
         try {
@@ -205,8 +378,117 @@ class BatchAnalysisDaoTest {
             }.exceptionOrNull()
 
             assertTrue(failure is SQLiteConstraintException)
+            assertEquals(0L, tableCount(database, "analysis_batches"))
+            assertEquals(0L, tableCount(database, "analysis_work_items"))
         } finally {
             database.close()
+        }
+    }
+
+    @Test
+    fun migration3To4PreservesOldDataAndCreatesBatchTables() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val databaseName = "batch-analysis-migration-3-4.db"
+        context.deleteDatabase(databaseName)
+        var roomDatabase: FrameYuDatabase? = null
+        try {
+            context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
+                database.execSQL(
+                    """
+                    CREATE TABLE media_assets (
+                        id INTEGER NOT NULL,
+                        uri TEXT NOT NULL,
+                        mime_type TEXT NOT NULL,
+                        taken_at_millis INTEGER NOT NULL,
+                        duration_millis INTEGER NOT NULL,
+                        width INTEGER NOT NULL,
+                        height INTEGER NOT NULL,
+                        rotation_degrees INTEGER NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        is_hdr INTEGER NOT NULL,
+                        relative_path TEXT,
+                        last_modified_millis INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL("CREATE UNIQUE INDEX index_media_assets_uri ON media_assets(uri)")
+                database.execSQL(
+                    """
+                    CREATE TABLE analysis_candidates (
+                        id INTEGER NOT NULL,
+                        media_asset_id INTEGER NOT NULL,
+                        timestamp_millis INTEGER NOT NULL,
+                        score INTEGER NOT NULL,
+                        sharpness_score INTEGER NOT NULL,
+                        subject_score INTEGER NOT NULL,
+                        expression_score INTEGER NOT NULL,
+                        composition_score INTEGER NOT NULL,
+                        scene_score INTEGER NOT NULL,
+                        thumbnail_path TEXT,
+                        is_selected INTEGER NOT NULL,
+                        is_cover INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(media_asset_id) REFERENCES media_assets(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    "CREATE INDEX index_analysis_candidates_media_asset_id " +
+                        "ON analysis_candidates(media_asset_id)",
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE analysis_tasks (
+                        id INTEGER NOT NULL,
+                        media_asset_id INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        progress INTEGER NOT NULL,
+                        current_timestamp_millis INTEGER NOT NULL,
+                        error_message TEXT,
+                        updated_at_millis INTEGER NOT NULL,
+                        plan_id TEXT,
+                        range_index INTEGER NOT NULL DEFAULT 0,
+                        sampled_frame_count INTEGER NOT NULL DEFAULT 0,
+                        total_sample_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(media_asset_id) REFERENCES media_assets(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    "CREATE INDEX index_analysis_tasks_media_asset_id " +
+                        "ON analysis_tasks(media_asset_id)",
+                )
+                database.execSQL(
+                    """
+                    INSERT INTO media_assets (
+                        id, uri, mime_type, taken_at_millis, duration_millis, width, height,
+                        rotation_degrees, size_bytes, is_hdr, relative_path, last_modified_millis
+                    ) VALUES (
+                        99, 'content://media/99', 'image/jpeg', 123, 0, 100, 100,
+                        0, 456, 0, NULL, 789
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL("PRAGMA user_version = 3")
+            }
+
+            val migratedDatabase = Room.databaseBuilder(context, FrameYuDatabase::class.java, databaseName)
+                .addMigrations(FrameYuDatabase.MIGRATION_3_4)
+                .build()
+            roomDatabase = migratedDatabase
+            assertEquals("content://media/99", migratedDatabase.mediaAssetDao().getById(99L)?.uri)
+            val batchId = migratedDatabase.batchAnalysisDao().createBatch(batch(), emptyList())
+            assertEquals(
+                0L,
+                migratedDatabase.batchAnalysisDao().observeBatch(batchId).first().totalWorkItems,
+            )
+        } finally {
+            roomDatabase?.close()
+            context.deleteDatabase(databaseName)
         }
     }
 
@@ -251,6 +533,60 @@ class BatchAnalysisDaoTest {
         lastModifiedMillis = 0L,
     )
 
+    private fun classification(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+        rank: Int,
+        label: String,
+    ) = MediaClassificationEntity(
+        id = 100L + rank,
+        mediaAssetId = mediaAssetId,
+        timestampMillis = timestampMillis,
+        modelSha256 = modelSha256,
+        rank = rank,
+        label = label,
+        confidence = 0.8f,
+    )
+
+    private fun detection(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+        rank: Int,
+        category: String,
+    ) = MediaDetectionEntity(
+        id = 200L + rank,
+        mediaAssetId = mediaAssetId,
+        timestampMillis = timestampMillis,
+        modelSha256 = modelSha256,
+        rank = rank,
+        category = category,
+        confidence = 0.7f,
+        left = 0.1f,
+        top = 0.2f,
+        right = 0.8f,
+        bottom = 0.9f,
+    )
+
+    private fun qualityResult(
+        id: Long,
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        analyzerVersion: String,
+        totalScore: Float,
+    ) = MediaQualityResultEntity(
+        id = id,
+        mediaAssetId = mediaAssetId,
+        timestampMillis = timestampMillis,
+        analyzerVersion = analyzerVersion,
+        totalScore = totalScore,
+        sharpnessScore = 0.5f,
+        exposureScore = 0.5f,
+        noiseScore = 0.5f,
+        compositionScore = 0.5f,
+    )
+
     private fun assertWorkItem(
         database: FrameYuDatabase,
         itemId: Long,
@@ -278,5 +614,12 @@ class BatchAnalysisDaoTest {
     private suspend fun assertIllegalState(block: suspend () -> Unit) {
         val failure = runCatching { block() }.exceptionOrNull()
         assertTrue("应拒绝非法来源状态", failure is IllegalStateException)
+    }
+
+    private fun tableCount(database: FrameYuDatabase, tableName: String): Long {
+        return database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $tableName").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            cursor.getLong(0)
+        }
     }
 }

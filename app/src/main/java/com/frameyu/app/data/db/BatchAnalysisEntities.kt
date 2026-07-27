@@ -219,13 +219,13 @@ data class AnalysisBatchWithProgress(
     @Embedded
     val batch: AnalysisBatchEntity,
     @ColumnInfo(name = "total_work_items")
-    val totalWorkItems: Int,
+    val totalWorkItems: Long,
     @ColumnInfo(name = "completed_work_items")
-    val completedWorkItems: Int,
+    val completedWorkItems: Long,
     @ColumnInfo(name = "running_work_items")
-    val runningWorkItems: Int,
+    val runningWorkItems: Long,
     @ColumnInfo(name = "pending_work_items")
-    val pendingWorkItems: Int,
+    val pendingWorkItems: Long,
     @ColumnInfo(name = "failed_work_items")
-    val failedWorkItems: Int,
+    val failedWorkItems: Long,
 )
