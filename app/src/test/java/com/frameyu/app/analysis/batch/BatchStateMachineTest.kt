@@ -130,6 +130,22 @@ class BatchStateMachineTest {
     }
 
     @Test
+    fun `无模型分析器版本符合已知哈希向量`() {
+        assertEquals(
+            "9AE947E9670120FF8E76FA0E14FC0E2F517D569829982A2C8B23692C30CE7F4D",
+            AnalyzerVersion.create(AnalysisStage.QUALITY, null, "quality-v1"),
+        )
+    }
+
+    @Test
+    fun `分析器版本按 UTF-8 和归一化模型摘要生成已知哈希向量`() {
+        assertEquals(
+            "8C91C0F0ECD6367193014D0732911135B5D10FE2275691C93AAAC08B97888940",
+            AnalyzerVersion.create(AnalysisStage.CLASSIFICATION, "a".repeat(64), "演唱会-v2"),
+        )
+    }
+
+    @Test
     fun `分析器版本稳定且为六十四位大写十六进制`() {
         val version = AnalyzerVersion.create(AnalysisStage.QUALITY, null, "quality-v1")
 
