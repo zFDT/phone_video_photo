@@ -5,7 +5,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -16,7 +15,7 @@ class FeatureCache internal constructor(
     private val filesDir: File,
     private val mover: FeatureCacheMover,
 ) {
-    constructor(filesDir: File) : this(filesDir, AtomicReplacingFeatureCacheMover)
+    constructor(filesDir: File) : this(filesDir, AtomicReplacingFeatureCacheMover())
 
     /** 返回规范化后的固定缓存路径，不创建文件。 */
     fun fileFor(modelSha256: String, mediaId: Long): File {
@@ -132,17 +131,17 @@ internal fun interface FeatureCacheMover {
     fun move(source: Path, target: Path)
 }
 
-private object AtomicReplacingFeatureCacheMover : FeatureCacheMover {
+internal class AtomicReplacingFeatureCacheMover(
+    private val atomicMove: (source: Path, target: Path) -> Unit = { source, target ->
+        Files.move(
+            source,
+            target,
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING,
+        )
+    },
+) : FeatureCacheMover {
     override fun move(source: Path, target: Path) {
-        try {
-            Files.move(
-                source,
-                target,
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
-        }
+        atomicMove(source, target)
     }
 }
