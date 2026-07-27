@@ -7,11 +7,18 @@ import com.frameyu.app.data.db.MediaClassificationEntity
 import com.frameyu.app.data.db.MediaDetectionEntity
 import com.frameyu.app.data.db.MediaFeatureReferenceEntity
 import com.frameyu.app.data.db.MediaQualityResultEntity
+import com.frameyu.app.storage.AtomicReplacingFeatureCacheMover
 import com.frameyu.app.storage.FeatureCache
+import com.frameyu.app.storage.FeatureCacheInputStreamOpener
+import com.frameyu.app.storage.FeatureCacheMover
 import com.frameyu.app.vision.DetectionObservation
 import com.frameyu.app.vision.LabelScore
+import java.io.Closeable
 import java.io.File
+import java.io.FileInputStream
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -90,7 +97,9 @@ class ImageAnalysisCoordinatorTest {
             detectionResult = emptyList()
         }
         val coordinator = coordinator(store, executor)
-        coordinator.analyze(workItem(AnalysisStage.CLASSIFICATION))
+        val classification = workItem(AnalysisStage.CLASSIFICATION)
+        coordinator.analyze(classification)
+        store.markCompleted(classification)
         val first = workItem(
             AnalysisStage.CONDITIONAL_DETECTION,
             analyzerVersion = "detection-empty-v1",
@@ -116,7 +125,9 @@ class ImageAnalysisCoordinatorTest {
             )
         }
         val coordinator = coordinator(store, executor)
-        coordinator.analyze(workItem(AnalysisStage.CLASSIFICATION))
+        val classification = workItem(AnalysisStage.CLASSIFICATION)
+        coordinator.analyze(classification)
+        store.markCompleted(classification)
         val first = workItem(
             AnalysisStage.CONDITIONAL_DETECTION,
             analyzerVersion = "detection-policy-v1",
@@ -195,6 +206,194 @@ class ImageAnalysisCoordinatorTest {
 
         base.analyze(workItem(AnalysisStage.QUALITY, analyzerVersion = "quality-v2", id = 104L))
         assertEquals(2, executor.qualityCalls)
+    }
+
+    @Test
+    fun `媒体修改时间变新后四个阶段都重新分析`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor().apply {
+            shouldDetectResult = true
+            detectionResult = listOf(
+                DetectionObservation("stage", 0.7f, 0.1f, 0.2f, 0.8f, 0.9f),
+            )
+        }
+        val coordinator = coordinator(store, executor)
+        val firstItems = imageStages.map { stage -> workItem(stage) }
+        firstItems.forEach { item ->
+            coordinator.analyze(item)
+            store.markCompleted(item, completedAtMillis = 10L)
+        }
+
+        store.assets[imageId] = image(lastModifiedMillis = 20L)
+        imageStages.forEach { stage ->
+            coordinator.analyze(workItem(stage, id = stage.ordinal + 201L, batchId = 2L))
+        }
+
+        assertEquals(2, executor.qualityCalls)
+        assertEquals(2, executor.classificationCalls)
+        assertEquals(2, executor.embeddingCalls)
+        assertEquals(2, executor.policyCalls)
+        assertEquals(2, executor.detectionCalls)
+    }
+
+    @Test
+    fun `新分类完成后相同检测版本也会重新评估`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor().apply {
+            shouldDetectResult = true
+            detectionResult = listOf(
+                DetectionObservation("stage", 0.7f, 0.1f, 0.2f, 0.8f, 0.9f),
+            )
+        }
+        val coordinator = coordinator(store, executor)
+        val classificationV1 = workItem(AnalysisStage.CLASSIFICATION, id = 301L)
+        coordinator.analyze(classificationV1)
+        store.markCompleted(classificationV1, completedAtMillis = 10L)
+        val detectionV1 = workItem(AnalysisStage.CONDITIONAL_DETECTION, id = 302L)
+        coordinator.analyze(detectionV1)
+        store.markCompleted(detectionV1, completedAtMillis = 20L)
+
+        coordinator.analyze(detectionV1.copy(id = 303L, batchId = 2L))
+        val classificationV2 = workItem(
+            AnalysisStage.CLASSIFICATION,
+            analyzerVersion = "classification-v2",
+            id = 304L,
+            batchId = 3L,
+        )
+        coordinator.analyze(classificationV2)
+        store.markCompleted(classificationV2, completedAtMillis = 30L)
+        coordinator.analyze(detectionV1.copy(id = 305L, batchId = 4L))
+
+        assertEquals(2, executor.classificationCalls)
+        assertEquals(2, executor.policyCalls)
+        assertEquals(2, executor.detectionCalls)
+    }
+
+    @Test
+    fun `当前工作项的完成标记必须被排除`() = runBlocking {
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor()
+        val coordinator = coordinator(store, executor)
+        val item = workItem(AnalysisStage.QUALITY, id = 401L)
+
+        coordinator.analyze(item)
+        store.markCompleted(item, completedAtMillis = 10L)
+        coordinator.analyze(item)
+
+        assertEquals(2, executor.qualityCalls)
+    }
+
+    @Test
+    fun `资源在 IO 线程获取关闭并在推理线程使用`() = runBlocking {
+        val ioDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "task6-io")
+        }.asCoroutineDispatcher()
+        val inferenceDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "task6-inference")
+        }.asCoroutineDispatcher()
+        var acquireThread = ""
+        var useThread = ""
+        var closeThread = ""
+
+        try {
+            val result = withDispatchedCloseable(
+                ioDispatcher = ioDispatcher,
+                inferenceDispatcher = inferenceDispatcher,
+                acquire = {
+                    acquireThread = Thread.currentThread().name
+                    RecordingCloseable { closeThread = Thread.currentThread().name }
+                },
+                block = {
+                    useThread = Thread.currentThread().name
+                    "完成"
+                },
+            )
+
+            assertEquals("完成", result)
+            assertTrue(acquireThread.startsWith("task6-io"))
+            assertTrue(useThread.startsWith("task6-inference"))
+            assertTrue(closeThread.startsWith("task6-io"))
+        } finally {
+            ioDispatcher.close()
+            inferenceDispatcher.close()
+        }
+    }
+
+    @Test
+    fun `推理取消或异常时仍关闭已获取资源`() = runBlocking {
+        val ioDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val inferenceDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        var cancellationClosed = false
+        var failureClosed = false
+
+        try {
+            assertSuspendThrows<CancellationException> {
+                withDispatchedCloseable(
+                    ioDispatcher,
+                    inferenceDispatcher,
+                    { RecordingCloseable { cancellationClosed = true } },
+                ) {
+                    throw CancellationException("测试取消")
+                }
+            }
+            assertSuspendThrows<IllegalStateException> {
+                withDispatchedCloseable(
+                    ioDispatcher,
+                    inferenceDispatcher,
+                    { RecordingCloseable { failureClosed = true } },
+                ) {
+                    error("测试异常")
+                }
+            }
+        } finally {
+            ioDispatcher.close()
+            inferenceDispatcher.close()
+        }
+
+        assertTrue(cancellationClosed)
+        assertTrue(failureClosed)
+    }
+
+    @Test
+    fun `特征缓存读写切换到缓存线程`() = runBlocking {
+        val cacheDispatcher = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "task6-cache")
+        }.asCoroutineDispatcher()
+        var writeThread = ""
+        var readThread = ""
+        val delegateMover = AtomicReplacingFeatureCacheMover()
+        val cache = FeatureCache(
+            temporaryFolder.root,
+            FeatureCacheMover { source, target ->
+                writeThread = Thread.currentThread().name
+                delegateMover.move(source, target)
+            },
+            FeatureCacheInputStreamOpener { file ->
+                readThread = Thread.currentThread().name
+                FileInputStream(file)
+            },
+        )
+        val store = FakeImageAnalysisStore(image())
+        val executor = FakeImageAnalysisStageExecutor()
+        val coordinator = coordinator(
+            store = store,
+            executor = executor,
+            cache = cache,
+            cacheDispatcher = cacheDispatcher,
+        )
+        val first = workItem(AnalysisStage.EMBEDDING, id = 501L)
+
+        try {
+            coordinator.analyze(first)
+            store.markCompleted(first, completedAtMillis = 10L)
+            coordinator.analyze(first.copy(id = 502L, batchId = 2L))
+        } finally {
+            cacheDispatcher.close()
+        }
+
+        assertTrue(writeThread.startsWith("task6-cache"))
+        assertTrue(readThread.startsWith("task6-cache"))
+        assertEquals(1, executor.embeddingCalls)
     }
 
     @Test
@@ -279,11 +478,14 @@ class ImageAnalysisCoordinatorTest {
         executor: FakeImageAnalysisStageExecutor,
         shas: ImageAnalysisModelShas = modelShas,
         cache: FeatureCache = FeatureCache(temporaryFolder.root),
+        cacheDispatcher: kotlinx.coroutines.CoroutineDispatcher =
+            kotlinx.coroutines.Dispatchers.IO,
     ) = ImageAnalysisCoordinator(
         store = store,
         featureCache = cache,
         stageExecutor = executor,
         modelShas = shas,
+        cacheDispatcher = cacheDispatcher,
     )
 
     private fun workItem(
@@ -304,6 +506,7 @@ class ImageAnalysisCoordinatorTest {
     private fun image(
         id: Long = imageId,
         mimeType: String = "image/jpeg",
+        lastModifiedMillis: Long = 1L,
     ) = MediaAssetEntity(
         id = id,
         uri = "content://media/images/$id",
@@ -316,7 +519,7 @@ class ImageAnalysisCoordinatorTest {
         sizeBytes = 1_024L,
         isHdr = false,
         relativePath = "DCIM",
-        lastModifiedMillis = 1L,
+        lastModifiedMillis = lastModifiedMillis,
     )
 
     private suspend inline fun <reified T : Throwable> assertSuspendThrows(
@@ -360,6 +563,12 @@ class ImageAnalysisCoordinatorTest {
     }
 }
 
+private class RecordingCloseable(
+    private val onClose: () -> Unit,
+) : Closeable {
+    override fun close() = onClose()
+}
+
 private class FakeImageAnalysisStore(initialAsset: MediaAssetEntity) : ImageAnalysisStore {
     val assets = mutableMapOf(initialAsset.id to initialAsset)
     val classifications = linkedMapOf<ResultKey, List<MediaClassificationEntity>>()
@@ -368,28 +577,45 @@ private class FakeImageAnalysisStore(initialAsset: MediaAssetEntity) : ImageAnal
     val qualityResults = linkedMapOf<ResultKey, MediaQualityResultEntity>()
     private val completedStages = mutableListOf<CompletedStage>()
 
-    fun markCompleted(item: AnalysisWorkItemEntity) {
+    fun markCompleted(
+        item: AnalysisWorkItemEntity,
+        completedAtMillis: Long = item.updatedAtMillis,
+    ) {
         completedStages += CompletedStage(
             itemId = item.id,
             mediaAssetId = item.mediaAssetId,
             stage = item.stage,
             analyzerVersion = item.analyzerVersion,
+            completedAtMillis = completedAtMillis,
         )
     }
 
     override suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity? = assets[mediaAssetId]
 
-    override suspend fun hasCompletedStage(
+    override suspend fun latestCompletedStageAt(
         mediaAssetId: Long,
         stage: String,
         analyzerVersion: String,
         excludingItemId: Long,
-    ): Boolean = completedStages.any { completed ->
-        completed.itemId != excludingItemId &&
+    ): Long? = completedStages.asSequence()
+        .filter { completed ->
+            completed.itemId != excludingItemId &&
             completed.mediaAssetId == mediaAssetId &&
             completed.stage == stage &&
             completed.analyzerVersion == analyzerVersion
-    }
+        }
+        .maxOfOrNull(CompletedStage::completedAtMillis)
+
+    override suspend fun latestCompletedClassificationAt(
+        mediaAssetId: Long,
+        excludingItemId: Long,
+    ): Long? = completedStages.asSequence()
+        .filter { completed ->
+            completed.itemId != excludingItemId &&
+                completed.mediaAssetId == mediaAssetId &&
+                completed.stage == AnalysisStage.CLASSIFICATION.name
+        }
+        .maxOfOrNull(CompletedStage::completedAtMillis)
 
     override suspend fun getClassifications(
         mediaAssetId: Long,
@@ -522,4 +748,5 @@ private data class CompletedStage(
     val mediaAssetId: Long,
     val stage: String,
     val analyzerVersion: String,
+    val completedAtMillis: Long,
 )

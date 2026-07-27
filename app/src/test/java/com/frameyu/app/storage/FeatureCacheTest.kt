@@ -1,6 +1,7 @@
 package com.frameyu.app.storage
 
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.AtomicMoveNotSupportedException
@@ -140,6 +141,55 @@ class FeatureCacheTest {
             file.writeBytes(bytes)
             assertNull(cache.read(modelSha, 3L))
         }
+    }
+
+    @Test
+    fun `大量不同路径共享固定数量的条带锁`() {
+        val indices = (1L..10_000L).map { mediaId ->
+            FeatureCache.lockIndexFor(File(temporaryFolder.root, "$mediaId.f32"))
+        }
+
+        assertEquals(64, FeatureCache.lockCount)
+        assertTrue(indices.all { index -> index in 0 until FeatureCache.lockCount })
+    }
+
+    @Test
+    fun `超大维度与稀疏大文件不分配整文件内存`() {
+        val cache = FeatureCache(temporaryFolder.root)
+        val modelSha = "d".repeat(64)
+        val file = cache.fileFor(modelSha, 10L)
+        assertTrue(requireNotNull(file.parentFile).mkdirs())
+        RandomAccessFile(file, "rw").use { output ->
+            output.write(littleEndianBytes(FeatureCache.MAX_VECTOR_DIMENSION + 1))
+            output.setLength(1L shl 30)
+        }
+
+        assertNull(cache.read(modelSha, 10L))
+        assertThrows<IllegalArgumentException> {
+            cache.write(
+                modelSha,
+                11L,
+                FloatArray(FeatureCache.MAX_VECTOR_DIMENSION + 1),
+            )
+        }
+    }
+
+    @Test
+    fun `读取器抛出的 Error 不会被缓存未命中吞掉`() {
+        val modelSha = "e".repeat(64)
+        FeatureCache(temporaryFolder.root).write(modelSha, 12L, floatArrayOf(1f))
+        val expected = AssertionError("测试 Error")
+        val cache = FeatureCache(
+            temporaryFolder.root,
+            AtomicReplacingFeatureCacheMover(),
+            FeatureCacheInputStreamOpener { throw expected },
+        )
+
+        val actual = assertThrows<AssertionError> {
+            cache.read(modelSha, 12L)
+        }
+
+        assertTrue(actual === expected)
     }
 
     private fun littleEndianBytes(dimension: Int, vararg values: Float): ByteArray =

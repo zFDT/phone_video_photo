@@ -20,8 +20,12 @@ import com.frameyu.app.vision.MediaImageDecoder
 import com.frameyu.app.vision.ObjectDetectionPolicy
 import com.frameyu.app.vision.ObjectDetectorAnalyzer
 import com.frameyu.app.vision.ThumbnailInput
+import java.io.Closeable
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 图片分析所使用的三个模型 SHA-256。 */
 data class ImageAnalysisModelShas(
@@ -46,12 +50,17 @@ data class ImageAnalysisModelShas(
 interface ImageAnalysisStore {
     suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity?
 
-    suspend fun hasCompletedStage(
+    suspend fun latestCompletedStageAt(
         mediaAssetId: Long,
         stage: String,
         analyzerVersion: String,
         excludingItemId: Long,
-    ): Boolean
+    ): Long?
+
+    suspend fun latestCompletedClassificationAt(
+        mediaAssetId: Long,
+        excludingItemId: Long,
+    ): Long?
 
     suspend fun getClassifications(
         mediaAssetId: Long,
@@ -104,15 +113,23 @@ class RoomImageAnalysisStore(
     override suspend fun getMedia(mediaAssetId: Long): MediaAssetEntity? =
         mediaAssetDao.getById(mediaAssetId)
 
-    override suspend fun hasCompletedStage(
+    override suspend fun latestCompletedStageAt(
         mediaAssetId: Long,
         stage: String,
         analyzerVersion: String,
         excludingItemId: Long,
-    ): Boolean = batchAnalysisDao.hasCompletedStage(
+    ): Long? = batchAnalysisDao.latestCompletedStageAt(
         mediaAssetId,
         stage,
         analyzerVersion,
+        excludingItemId,
+    )
+
+    override suspend fun latestCompletedClassificationAt(
+        mediaAssetId: Long,
+        excludingItemId: Long,
+    ): Long? = batchAnalysisDao.latestCompletedClassificationAt(
+        mediaAssetId,
         excludingItemId,
     )
 
@@ -211,6 +228,7 @@ class ImageAnalysisCoordinator(
     private val featureCache: FeatureCache,
     private val stageExecutor: ImageAnalysisStageExecutor,
     modelShas: ImageAnalysisModelShas,
+    private val cacheDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val modelShas = modelShas.normalized()
 
@@ -227,13 +245,13 @@ class ImageAnalysisCoordinator(
         }
 
         when (stage) {
-            AnalysisStage.QUALITY -> analyzeQuality(media, analyzerVersion)
+            AnalysisStage.QUALITY -> analyzeQuality(media, workItem.id, analyzerVersion)
             AnalysisStage.CLASSIFICATION -> analyzeClassification(
                 media,
                 workItem.id,
                 analyzerVersion,
             )
-            AnalysisStage.EMBEDDING -> analyzeEmbedding(media)
+            AnalysisStage.EMBEDDING -> analyzeEmbedding(media, workItem.id, analyzerVersion)
             AnalysisStage.CONDITIONAL_DETECTION -> analyzeConditionalDetection(
                 media,
                 workItem.id,
@@ -245,9 +263,20 @@ class ImageAnalysisCoordinator(
 
     private suspend fun analyzeQuality(
         media: MediaAssetEntity,
+        workItemId: Long,
         analyzerVersion: String,
     ) {
-        if (store.getQualityResult(media.id, IMAGE_TIMESTAMP_MILLIS, analyzerVersion) != null) return
+        val resultExists =
+            store.getQualityResult(media.id, IMAGE_TIMESTAMP_MILLIS, analyzerVersion) != null
+        if (resultExists && hasFreshCompletedStage(
+                media,
+                AnalysisStage.QUALITY,
+                analyzerVersion,
+                workItemId,
+            )
+        ) {
+            return
+        }
         val result = stageExecutor.analyzeQuality(media)
         store.upsertQualityResult(
             MediaQualityResultEntity(
@@ -268,12 +297,13 @@ class ImageAnalysisCoordinator(
         workItemId: Long,
         analyzerVersion: String,
     ) {
-        if (store.hasCompletedStage(
-            media.id,
-            AnalysisStage.CLASSIFICATION.name,
-            analyzerVersion,
-            workItemId,
-        )) {
+        if (hasFreshCompletedStage(
+                media,
+                AnalysisStage.CLASSIFICATION,
+                analyzerVersion,
+                workItemId,
+            )
+        ) {
             return
         }
 
@@ -295,16 +325,32 @@ class ImageAnalysisCoordinator(
         )
     }
 
-    private suspend fun analyzeEmbedding(media: MediaAssetEntity) {
+    private suspend fun analyzeEmbedding(
+        media: MediaAssetEntity,
+        workItemId: Long,
+        analyzerVersion: String,
+    ) {
         val reference = store.getFeatureReference(
             media.id,
             IMAGE_TIMESTAMP_MILLIS,
             modelShas.embedding,
         )
-        if (reference != null && isReadableFeatureReference(reference, media.id)) return
+        if (reference != null &&
+            isReadableFeatureReference(reference, media.id) &&
+            hasFreshCompletedStage(
+                media,
+                AnalysisStage.EMBEDDING,
+                analyzerVersion,
+                workItemId,
+            )
+        ) {
+            return
+        }
 
         val vector = stageExecutor.embed(media)
-        val file = featureCache.write(modelShas.embedding, media.id, vector)
+        val file = withContext(cacheDispatcher) {
+            featureCache.write(modelShas.embedding, media.id, vector)
+        }
         store.upsertFeatureReference(
             MediaFeatureReferenceEntity(
                 mediaAssetId = media.id,
@@ -321,12 +367,19 @@ class ImageAnalysisCoordinator(
         workItemId: Long,
         analyzerVersion: String,
     ) {
-        if (store.hasCompletedStage(
+        val detectionCompletedAt = store.latestCompletedStageAt(
             media.id,
             AnalysisStage.CONDITIONAL_DETECTION.name,
             analyzerVersion,
             workItemId,
-        )) {
+        )
+        val classificationCompletedAt =
+            store.latestCompletedClassificationAt(media.id, workItemId)
+        if (detectionCompletedAt != null &&
+            classificationCompletedAt != null &&
+            detectionCompletedAt >= media.lastModifiedMillis &&
+            detectionCompletedAt >= classificationCompletedAt
+        ) {
             return
         }
 
@@ -370,7 +423,7 @@ class ImageAnalysisCoordinator(
         )
     }
 
-    private fun isReadableFeatureReference(
+    private suspend fun isReadableFeatureReference(
         reference: MediaFeatureReferenceEntity,
         mediaId: Long,
     ): Boolean {
@@ -379,9 +432,24 @@ class ImageAnalysisCoordinator(
             .normalize()
         val referencedFile = File(reference.cachePath).absoluteFile.normalize()
         if (referencedFile != expectedFile) return false
-        val vector = featureCache.read(modelShas.embedding, mediaId) ?: return false
+        val vector = withContext(cacheDispatcher) {
+            featureCache.read(modelShas.embedding, mediaId)
+        } ?: return false
         return reference.dimension == vector.size
     }
+
+    private suspend fun hasFreshCompletedStage(
+        media: MediaAssetEntity,
+        stage: AnalysisStage,
+        analyzerVersion: String,
+        workItemId: Long,
+    ): Boolean =
+        store.latestCompletedStageAt(
+            media.id,
+            stage.name,
+            analyzerVersion,
+            workItemId,
+        )?.let { completedAt -> completedAt >= media.lastModifiedMillis } == true
 
     private fun parseSupportedStage(rawStage: String): AnalysisStage {
         val stage = try {
@@ -414,6 +482,8 @@ class DefaultImageAnalysisStageExecutor(
     private val detectionPolicy: ObjectDetectionPolicy = ObjectDetectionPolicy(),
     private val qualityScorer: QualityScorer = QualityScorer(),
     private val highValueProvider: (MediaAssetEntity) -> Boolean = { false },
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val inferenceDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ImageAnalysisStageExecutor {
     override suspend fun analyzeQuality(media: MediaAssetEntity): ImageQualityScores =
         withBitmap(media) { bitmap ->
@@ -454,19 +524,42 @@ class DefaultImageAnalysisStageExecutor(
     override suspend fun detect(media: MediaAssetEntity): List<DetectionObservation> =
         withBitmap(media, detector::detect)
 
-    private inline fun <Result> withBitmap(
+    private suspend fun <Result> withBitmap(
         media: MediaAssetEntity,
         block: (Bitmap) -> Result,
-    ): Result = decoder.decode(
-        uri = Uri.parse(media.uri),
-        mediaRotationDegrees = media.rotationDegrees,
-    ).use { decoded ->
+    ): Result = withDispatchedCloseable(
+        ioDispatcher = ioDispatcher,
+        inferenceDispatcher = inferenceDispatcher,
+        acquire = {
+            decoder.decode(
+                uri = Uri.parse(media.uri),
+                mediaRotationDegrees = media.rotationDegrees,
+            )
+        },
+    ) { decoded ->
         block(decoded.bitmap)
     }
 
     private companion object {
         const val SCORE_MAX = 100f
         const val NEUTRAL_SCORE = 0.5f
+    }
+}
+
+/**
+ * 在 IO 调度器获取并关闭资源，在推理调度器使用资源。
+ * 资源的 use 作用域包住线程切换，取消或异常时仍会回到 finally 关闭。
+ */
+internal suspend fun <Resource : Closeable, Result> withDispatchedCloseable(
+    ioDispatcher: CoroutineDispatcher,
+    inferenceDispatcher: CoroutineDispatcher,
+    acquire: () -> Resource,
+    block: suspend (Resource) -> Result,
+): Result = withContext(ioDispatcher) {
+    acquire().use { resource ->
+        withContext(inferenceDispatcher) {
+            block(resource)
+        }
     }
 }
 

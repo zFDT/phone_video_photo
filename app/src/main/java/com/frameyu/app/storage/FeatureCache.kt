@@ -3,19 +3,31 @@ package com.frameyu.app.storage
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.util.concurrent.ConcurrentHashMap
 
 /** 在应用私有目录中按模型和媒体保存 float32 特征向量。 */
 class FeatureCache internal constructor(
     private val filesDir: File,
     private val mover: FeatureCacheMover,
+    private val inputStreamOpener: FeatureCacheInputStreamOpener,
 ) {
-    constructor(filesDir: File) : this(filesDir, AtomicReplacingFeatureCacheMover())
+    constructor(filesDir: File) : this(
+        filesDir,
+        AtomicReplacingFeatureCacheMover(),
+        FeatureCacheInputStreamOpener(::FileInputStream),
+    )
+
+    internal constructor(filesDir: File, mover: FeatureCacheMover) : this(
+        filesDir,
+        mover,
+        FeatureCacheInputStreamOpener(::FileInputStream),
+    )
 
     /** 返回规范化后的固定缓存路径，不创建文件。 */
     fun fileFor(modelSha256: String, mediaId: Long): File {
@@ -41,6 +53,9 @@ class FeatureCache internal constructor(
      */
     fun write(modelSha256: String, mediaId: Long, vector: FloatArray): File {
         require(vector.isNotEmpty()) { "特征向量不能为空" }
+        require(vector.size <= MAX_VECTOR_DIMENSION) {
+            "特征向量维度不能超过 $MAX_VECTOR_DIMENSION"
+        }
         require(vector.all(Float::isFinite)) { "特征向量必须只包含有限数值" }
         val finalFile = fileFor(modelSha256, mediaId)
 
@@ -52,29 +67,44 @@ class FeatureCache internal constructor(
     private fun readValidated(file: File): FloatArray? {
         if (!file.isFile) return null
         val length = file.length()
-        if (length < MIN_FILE_SIZE_BYTES || length > Int.MAX_VALUE) return null
+        if (length < MIN_FILE_SIZE_BYTES) return null
 
-        return runCatching {
-            val bytes = ByteArray(length.toInt())
-            FileInputStream(file).use { input ->
-                var offset = 0
-                while (offset < bytes.size) {
-                    val count = input.read(bytes, offset, bytes.size - offset)
-                    if (count < 0) return null
-                    offset += count
+        return try {
+            inputStreamOpener.open(file).buffered().use { input ->
+                val header = ByteArray(Int.SIZE_BYTES)
+                if (!input.readFully(header, header.size)) return null
+                val dimension = ByteBuffer.wrap(header)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .int
+                if (dimension !in 1..MAX_VECTOR_DIMENSION) return null
+                val expectedLength =
+                    Int.SIZE_BYTES.toLong() + dimension.toLong() * Float.SIZE_BYTES
+                if (expectedLength != length) return null
+
+                val values = FloatArray(dimension)
+                val chunk = ByteArray(minOf(READ_CHUNK_BYTES, dimension * Float.SIZE_BYTES))
+                var valueOffset = 0
+                while (valueOffset < dimension) {
+                    val valuesInChunk = minOf(
+                        chunk.size / Float.SIZE_BYTES,
+                        dimension - valueOffset,
+                    )
+                    val bytesInChunk = valuesInChunk * Float.SIZE_BYTES
+                    if (!input.readFully(chunk, bytesInChunk)) return null
+                    val buffer = ByteBuffer.wrap(chunk, 0, bytesInChunk)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                    repeat(valuesInChunk) {
+                        val value = buffer.float
+                        if (!value.isFinite()) return null
+                        values[valueOffset++] = value
+                    }
                 }
                 if (input.read() != -1) return null
+                values
             }
-
-            val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val dimension = buffer.int
-            if (dimension <= 0) return null
-            val expectedLength = Int.SIZE_BYTES.toLong() + dimension.toLong() * Float.SIZE_BYTES
-            if (expectedLength != length) return null
-            FloatArray(dimension) { buffer.float }.takeIf { values ->
-                values.all(Float::isFinite)
-            }
-        }.getOrNull()
+        } catch (_: IOException) {
+            null
+        }
     }
 
     private fun writeAtomically(finalFile: File, vector: FloatArray): File {
@@ -103,9 +133,10 @@ class FeatureCache internal constructor(
 
             mover.move(tempFile.toPath(), finalFile.toPath())
             return finalFile
-        } catch (error: Exception) {
-            tempFile.delete()
+        } catch (error: IOException) {
             throw IllegalStateException("写入特征缓存失败：${finalFile.absolutePath}", error)
+        } finally {
+            tempFile.delete()
         }
     }
 
@@ -116,15 +147,47 @@ class FeatureCache internal constructor(
         return modelSha256.lowercase()
     }
 
-    private companion object {
-        const val FEATURES_DIRECTORY = "features"
-        const val MIN_FILE_SIZE_BYTES = Int.SIZE_BYTES + Float.SIZE_BYTES
-        val MODEL_SHA_PATTERN = Regex("[0-9A-Fa-f]{64}")
-        val pathLocks = ConcurrentHashMap<String, Any>()
+    companion object {
+        internal const val MAX_VECTOR_DIMENSION = 65_536
+        private const val STRIPED_LOCK_COUNT = 64
+        private const val FEATURES_DIRECTORY = "features"
+        private const val MIN_FILE_SIZE_BYTES = Int.SIZE_BYTES + Float.SIZE_BYTES
+        private const val READ_CHUNK_BYTES = 8 * 1_024
+        private val MODEL_SHA_PATTERN = Regex("[0-9A-Fa-f]{64}")
+        private val pathLocks = Array(STRIPED_LOCK_COUNT) { Any() }
 
-        fun lockFor(file: File): Any =
-            pathLocks.computeIfAbsent(file.absoluteFile.normalize().path) { Any() }
+        internal val lockCount: Int
+            get() = pathLocks.size
+
+        internal fun lockIndexFor(file: File): Int {
+            val path = file.toPath().toAbsolutePath().normalize().toString()
+            val hash = path.hashCode()
+            return (hash xor (hash ushr 16)) and (STRIPED_LOCK_COUNT - 1)
+        }
+
+        private fun lockFor(file: File): Any =
+            pathLocks[lockIndexFor(file)]
     }
+}
+
+private fun InputStream.readFully(buffer: ByteArray, length: Int): Boolean {
+    var offset = 0
+    while (offset < length) {
+        val count = read(buffer, offset, length - offset)
+        if (count < 0) return false
+        if (count == 0) {
+            val value = read()
+            if (value < 0) return false
+            buffer[offset++] = value.toByte()
+        } else {
+            offset += count
+        }
+    }
+    return true
+}
+
+internal fun interface FeatureCacheInputStreamOpener {
+    fun open(file: File): InputStream
 }
 
 internal fun interface FeatureCacheMover {

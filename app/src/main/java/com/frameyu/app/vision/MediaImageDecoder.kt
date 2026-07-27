@@ -65,7 +65,7 @@ class MediaImageDecoder(
             return result
         } catch (cancellation: CancellationException) {
             throw cancellation
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             throw IllegalStateException(
                 "解码图片失败（URI：$uri）：${error.message ?: "未知错误"}",
                 error,

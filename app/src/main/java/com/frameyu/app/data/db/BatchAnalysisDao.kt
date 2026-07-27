@@ -190,22 +190,34 @@ abstract class BatchAnalysisDao {
 
     @Query(
         """
-        SELECT EXISTS(
-            SELECT 1 FROM analysis_work_items
-            WHERE media_asset_id = :mediaAssetId
-              AND stage = :stage
-              AND analyzer_version = :analyzerVersion
-              AND status = 'COMPLETED'
-              AND id != :excludingItemId
-        )
+        SELECT MAX(updated_at_millis) FROM analysis_work_items
+        WHERE media_asset_id = :mediaAssetId
+          AND stage = :stage
+          AND analyzer_version = :analyzerVersion
+          AND status = 'COMPLETED'
+          AND id != :excludingItemId
         """
     )
-    abstract suspend fun hasCompletedStage(
+    abstract suspend fun latestCompletedStageAt(
         mediaAssetId: Long,
         stage: String,
         analyzerVersion: String,
         excludingItemId: Long,
-    ): Boolean
+    ): Long?
+
+    @Query(
+        """
+        SELECT MAX(updated_at_millis) FROM analysis_work_items
+        WHERE media_asset_id = :mediaAssetId
+          AND stage = 'CLASSIFICATION'
+          AND status = 'COMPLETED'
+          AND id != :excludingItemId
+        """
+    )
+    abstract suspend fun latestCompletedClassificationAt(
+        mediaAssetId: Long,
+        excludingItemId: Long,
+    ): Long?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertClassifications(results: List<MediaClassificationEntity>)
