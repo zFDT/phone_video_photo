@@ -67,6 +67,21 @@ class SamplingPlanTest {
     }
 
     @Test
+    fun `长视频模式可以提高粗采样帧率`() {
+        val plan = SamplingPlan.create(videoDurationMillis = 2_000L, coarseFramesPerSecond = 2.0)
+
+        assertEquals(2.0, plan.ranges.single().framesPerSecond, 0.0)
+        assertEquals(listOf(0L, 500L, 1_000L, 1_500L), plan.sampleTimestamps())
+    }
+
+    @Test
+    fun `粗采样帧率不能超过长视频模式上限`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SamplingPlan.create(videoDurationMillis = 2_000L, coarseFramesPerSecond = 2.1)
+        }
+    }
+
+    @Test
     fun `规划器拒绝重叠重点区间`() {
         assertThrows(IllegalArgumentException::class.java) {
             SamplingPlan.create(

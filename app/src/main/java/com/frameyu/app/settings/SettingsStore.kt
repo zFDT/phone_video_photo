@@ -59,6 +59,7 @@ class SettingsStore(
     }
 
     companion object {
+        const val PREFERENCES_NAME = "frameyu-settings"
         private const val KEY_CACHE_LIMIT_GB = "cache_limit_gb"
         private const val KEY_CONCERT_MODE_ENABLED = "concert_mode_enabled"
         private const val KEY_COPY_LOCATION_METADATA = "copy_location_metadata"

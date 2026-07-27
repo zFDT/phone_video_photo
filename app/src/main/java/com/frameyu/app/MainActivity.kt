@@ -34,6 +34,8 @@ import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
 import com.frameyu.app.export.MotionPhotoExporter
 import com.frameyu.app.organize.DuplicateDetector
+import com.frameyu.app.organize.ContentHashDuplicateDetector
+import com.frameyu.app.organize.ContentHashReader
 import com.frameyu.app.organize.OrganizerRepository
 import com.frameyu.app.ui.organize.OrganizerScreen
 import com.frameyu.app.settings.SettingsSnapshot
@@ -66,11 +68,12 @@ class MainActivity : ComponentActivity() {
     private var showSettings = mutableStateOf(false)
     private var settingsSnapshot = mutableStateOf(SettingsSnapshot())
     private val settingsStore by lazy {
-        SettingsStore(getSharedPreferences(SETTINGS_PREFERENCES, MODE_PRIVATE))
+        SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
     }
     private val organizerRepository by lazy {
         OrganizerRepository(
             detector = DuplicateDetector(),
+            contentHashDetector = ContentHashDuplicateDetector(contentHashReader()),
             deleter = ::moveToSystemTrash,
         )
     }
@@ -94,6 +97,11 @@ class MainActivity : ComponentActivity() {
                         OrganizerScreen(
                             database = (application as FrameYuApplication).database,
                             repository = organizerRepository,
+                            onExactDuplicateScan = { assets ->
+                                withContext(Dispatchers.IO) {
+                                    organizerRepository.exactDuplicateCandidates(assets)
+                                }
+                            },
                             onBack = { showOrganizer.value = false },
                         )
                     } else if (candidateMedia == null && showSettings.value) {
@@ -191,7 +199,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 以分块流读取媒体，避免长视频在完全重复扫描时一次性进入内存。 */
+    private fun contentHashReader(): ContentHashReader = ContentHashReader { uri ->
+        sequence<ByteArray> {
+            val input = contentResolver.openInputStream(Uri.parse(uri)) ?: error("无法打开媒体：$uri")
+            input.use { stream ->
+                val buffer = ByteArray(HASH_BUFFER_SIZE)
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count <= 0) break
+                    yield(buffer.copyOf(count))
+                }
+            }
+        }.asIterable()
+    }
+
     private companion object {
-        const val SETTINGS_PREFERENCES = "frameyu-settings"
+        const val HASH_BUFFER_SIZE = 1024 * 1024
     }
 }

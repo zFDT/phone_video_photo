@@ -34,6 +34,7 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.organize.DuplicateDetector
 import com.frameyu.app.organize.DuplicateGroup
+import com.frameyu.app.organize.ContentHashDuplicateResult
 import com.frameyu.app.organize.OrganizerRepository
 import kotlinx.coroutines.launch
 
@@ -42,10 +43,13 @@ import kotlinx.coroutines.launch
 fun OrganizerScreen(
     database: FrameYuDatabase,
     repository: OrganizerRepository,
+    onExactDuplicateScan: suspend (List<MediaAssetEntity>) -> ContentHashDuplicateResult,
     onBack: () -> Unit,
 ) {
     val assets by database.mediaAssetDao().observeAll().collectAsState(initial = emptyList())
     val groups = remember(assets) { repository.duplicateCandidates(assets) }
+    var exactResult by remember { mutableStateOf<ContentHashDuplicateResult?>(null) }
+    val displayGroups = exactResult?.groups ?: groups
     val classifier = remember { AlbumClassifier() }
     val categories = remember(assets) {
         assets.groupingBy { classifier.classify(it).first() }.eachCount()
@@ -53,6 +57,7 @@ fun OrganizerScreen(
     val scope = rememberCoroutineScope()
     var selectedKeys by remember { mutableStateOf(emptySet<String>()) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var isScanningExact by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -70,23 +75,54 @@ fun OrganizerScreen(
             Text(text = "${assets.size} 项", style = MaterialTheme.typography.bodySmall)
         }
         Text(
-            text = "截图 ${categories[AlbumCategory.SCREENSHOT] ?: 0} · 录屏 ${categories[AlbumCategory.SCREEN_RECORDING] ?: 0} · 重复组 ${groups.size}",
+            text = "截图 ${categories[AlbumCategory.SCREENSHOT] ?: 0} · 录屏 ${categories[AlbumCategory.SCREEN_RECORDING] ?: 0} · 重复组 ${displayGroups.size}",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            text = "只会处理你勾选并确认的重复项，建议保留项不会被删除。",
+            text = if (exactResult == null) {
+                "当前显示的是元数据候选；完全重复扫描会逐字节比较文件内容。"
+            } else {
+                "已完成完全重复扫描；只会处理你勾选并确认的项目。"
+            },
             style = MaterialTheme.typography.bodySmall,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = {
+                    isScanningExact = true
+                    scope.launch {
+                        runCatching { onExactDuplicateScan(assets) }
+                            .onSuccess {
+                                exactResult = it
+                                selectedKeys = emptySet()
+                                message = if (it.failedUris.isEmpty()) {
+                                    "完全重复扫描完成：发现 ${it.groups.size} 组"
+                                } else {
+                                    "完全重复扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
+                                }
+                            }
+                            .onFailure { message = "完全重复扫描失败：${it.message ?: "未知错误"}" }
+                        isScanningExact = false
+                    }
+                },
+                enabled = assets.isNotEmpty() && !isScanningExact,
+            ) { Text(text = if (isScanningExact) "扫描中…" else "扫描完全重复") }
+            if (exactResult != null) {
+                TextButton(onClick = { exactResult = null; selectedKeys = emptySet() }) {
+                    Text(text = "返回候选")
+                }
+            }
+        }
         message?.let { Text(text = it, color = MaterialTheme.colorScheme.primary) }
         Spacer(modifier = Modifier.height(12.dp))
-        if (groups.isEmpty()) {
+        if (displayGroups.isEmpty()) {
             Text(text = "暂未发现可整理的重复媒体。", modifier = Modifier.weight(1f))
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(groups, key = DuplicateGroup::duplicateKey) { group ->
+                items(displayGroups, key = DuplicateGroup::duplicateKey) { group ->
                     val selected = group.duplicateKey in selectedKeys
                     DuplicateGroupRow(
                         group = group,
@@ -108,8 +144,8 @@ fun OrganizerScreen(
         ) {
             OutlinedButton(
                 modifier = Modifier.weight(1f),
-                onClick = { selectedKeys = groups.map { it.duplicateKey }.toSet() },
-                enabled = groups.isNotEmpty(),
+                onClick = { selectedKeys = displayGroups.map { it.duplicateKey }.toSet() },
+                enabled = displayGroups.isNotEmpty(),
             ) { Text(text = "全选重复组") }
             Button(
                 modifier = Modifier.weight(1f),

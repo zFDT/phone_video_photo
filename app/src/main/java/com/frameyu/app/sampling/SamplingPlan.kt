@@ -34,9 +34,16 @@ class SamplingPlan private constructor(
     companion object {
         const val MAX_VIDEO_DURATION_MILLIS = 2 * 60 * 60 * 1_000L
 
-        fun create(videoDurationMillis: Long, requestedRanges: List<SampleRange> = emptyList()): SamplingPlan {
+        fun create(
+            videoDurationMillis: Long,
+            requestedRanges: List<SampleRange> = emptyList(),
+            coarseFramesPerSecond: Double = SamplingTier.COARSE.defaultFramesPerSecond,
+        ): SamplingPlan {
             require(videoDurationMillis > 0L && videoDurationMillis <= MAX_VIDEO_DURATION_MILLIS) {
                 "视频时长必须在 1 毫秒到 2 小时之间"
+            }
+            require(coarseFramesPerSecond in SamplingTier.COARSE.minFramesPerSecond..SamplingTier.COARSE.maxFramesPerSecond) {
+                "粗采样帧率必须在 ${SamplingTier.COARSE.minFramesPerSecond}～${SamplingTier.COARSE.maxFramesPerSecond} 帧/秒之间"
             }
             val focused = requestedRanges.sortedBy(SampleRange::startMillis)
             focused.forEach { range ->
@@ -48,11 +55,15 @@ class SamplingPlan private constructor(
             val result = mutableListOf<SampleRange>()
             var cursor = 0L
             focused.forEach { range ->
-                if (cursor < range.startMillis) result += SampleRange(cursor, range.startMillis, 1.0, SamplingTier.COARSE)
+                if (cursor < range.startMillis) {
+                    result += SampleRange(cursor, range.startMillis, coarseFramesPerSecond, SamplingTier.COARSE)
+                }
                 result += range
                 cursor = range.endMillis
             }
-            if (cursor < videoDurationMillis) result += SampleRange(cursor, videoDurationMillis, 1.0, SamplingTier.COARSE)
+            if (cursor < videoDurationMillis) {
+                result += SampleRange(cursor, videoDurationMillis, coarseFramesPerSecond, SamplingTier.COARSE)
+            }
             return SamplingPlan(videoDurationMillis, result)
         }
 

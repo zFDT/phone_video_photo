@@ -14,6 +14,7 @@ import com.frameyu.app.sampling.VideoAnalysisWorkerFactory
 import com.frameyu.app.sampling.VideoAnalysisWorkerRunner
 import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
 import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
+import com.frameyu.app.settings.SettingsStore
 
 class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var database: FrameYuDatabase
@@ -40,7 +41,10 @@ class FrameYuApplication : Application(), Configuration.Provider {
         database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
             .addMigrations(FrameYuDatabase.MIGRATION_1_2, FrameYuDatabase.MIGRATION_2_3)
             .build()
-        videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database)
+        val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
+        videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(this, database) {
+            settingsStore.read().concertModeEnabled
+        }
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }

@@ -63,6 +63,23 @@ class DuplicateDetectorTest {
     }
 
     @Test
+    fun `完全重复扫描通过仓库暴露且不会触发删除`() = runBlocking {
+        val deletedUris = mutableListOf<List<Uri>>()
+        val first = media("content://media/one.jpg")
+        val second = media("content://media/two.jpg")
+        val repository = OrganizerRepository(
+            detector = DuplicateDetector(),
+            contentHashDetector = ContentHashDuplicateDetector(ContentHashReader { listOf("same".toByteArray()) }),
+            deleter = { uris -> deletedUris.add(uris) },
+        )
+
+        val result = repository.exactDuplicateCandidates(listOf(first, second))
+
+        assertEquals(listOf(listOf(first, second)), result.groups.map { it.assets })
+        assertTrue(deletedUris.isEmpty())
+    }
+
+    @Test
     fun `显式删除只把传入的 Uri 列表交给注入的删除器`() = runBlocking {
         val deletedUris = mutableListOf<List<Uri>>()
         val repository = OrganizerRepository(

@@ -29,7 +29,7 @@ enum class SamplingTier(
     val maxFramesPerSecond: Double,
     val defaultFramesPerSecond: Double,
 ) {
-    COARSE(1.0, 1.0, 1.0),
+    COARSE(1.0, 2.0, 1.0),
     FOCUSED(5.0, 10.0, 8.0),
     HIGH_VALUE(15.0, 30.0, 24.0),
 }

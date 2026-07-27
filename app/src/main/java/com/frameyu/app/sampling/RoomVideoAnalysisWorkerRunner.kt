@@ -17,6 +17,7 @@ class RoomVideoAnalysisWorkerRunner(
     private val context: Context,
     private val database: FrameYuDatabase,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
+    private val concertModeEnabledProvider: () -> Boolean = { false },
 ) : VideoAnalysisWorkerRunner {
     override suspend fun run(
         taskId: Long,
@@ -28,7 +29,11 @@ class RoomVideoAnalysisWorkerRunner(
             ?: error("媒体索引不存在：${task.mediaAssetId}")
         require(media.durationMillis > 0L) { "视频没有有效时长" }
 
-        val plan = SamplingPlan.create(media.durationMillis)
+        val coarseFramesPerSecond = if (concertModeEnabledProvider()) 2.0 else 1.0
+        val plan = SamplingPlan.create(
+            videoDurationMillis = media.durationMillis,
+            coarseFramesPerSecond = coarseFramesPerSecond,
+        )
         val checkpoint = task.planId?.let { planId ->
             if (planId == plan.planId) {
                 SamplingCheckpointRecord(
