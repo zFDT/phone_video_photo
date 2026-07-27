@@ -1,5 +1,6 @@
 package com.frameyu.app.vision
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,13 +30,26 @@ class ObjectDetectionPolicyTest {
     }
 
     @Test
-    fun `前两名差值等于阈值时不因差值触发检测`() {
-        val labels = listOf(
-            LabelScore("second", 0.80f),
-            LabelScore("first", 0.90f),
-        )
+    fun `可表示的最大一个小于差值阈值的 Float 应触发检测`() {
+        val expectedGap = Math.nextDown(0.10f)
+        val top1 = 0.45f
+        val top2 = top1 - expectedGap
 
-        assertFalse(policy.shouldDetect(labels, highValue = false))
+        assertEquals(expectedGap, top1 - top2, 0f)
+        assertTrue(
+            policy.shouldDetect(
+                listOf(
+                    LabelScore("first", top1),
+                    LabelScore("second", top2),
+                ),
+                highValue = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `前两名差值等于阈值时不因差值触发检测`() {
+        assertFalse(isUncertainConfidenceGap(0.10f))
     }
 
     @Test

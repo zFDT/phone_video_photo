@@ -10,7 +10,7 @@ class ObjectDetectionPolicy {
         val sortedLabels = labels.sortedByDescending(LabelScore::score)
         if (sortedLabels.first().score < MIN_CONFIDENCE) return true
         if (sortedLabels.size >= 2 &&
-            sortedLabels[0].score - sortedLabels[1].score < MIN_CONFIDENCE_GAP - FLOAT_TOLERANCE
+            isUncertainConfidenceGap(sortedLabels[0].score - sortedLabels[1].score)
         ) {
             return true
         }
@@ -19,8 +19,6 @@ class ObjectDetectionPolicy {
 
     private companion object {
         const val MIN_CONFIDENCE = 0.45f
-        const val MIN_CONFIDENCE_GAP = 0.10f
-        const val FLOAT_TOLERANCE = 0.000001f
         val SUBJECT_LABELS = setOf(
             "person",
             "human",
@@ -34,3 +32,5 @@ class ObjectDetectionPolicy {
         )
     }
 }
+
+internal fun isUncertainConfidenceGap(gap: Float): Boolean = gap < 0.10f
