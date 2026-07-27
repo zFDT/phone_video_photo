@@ -12,6 +12,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** 向量分析抽象，后续由 MediaPipe Image Embedder 实现。 */
 interface ImageEmbeddingAnalyzer : Closeable {
     fun analyze(input: ThumbnailInput): Task<EmbeddingObservation>
+
+    /** 同步执行向量推理，供已经切换到后台线程的统一分析器使用。 */
+    fun analyzeSynchronously(input: ThumbnailInput): EmbeddingObservation =
+        Tasks.await(analyze(input))
 }
 
 /** MediaPipe Image Embedder 的同步适配器，调用方应在后台线程执行 analyze。 */
@@ -20,6 +24,7 @@ class MediaPipeImageEmbeddingAnalyzer(
     private val modelAssetPath: String,
 ) : ImageEmbeddingAnalyzer {
     private val closed = AtomicBoolean(false)
+    private val inferenceLock = Any()
     private val initialization: Result<ImageEmbedder> = runCatching {
         ImageEmbedder.createFromOptions(
             context,
@@ -35,27 +40,48 @@ class MediaPipeImageEmbeddingAnalyzer(
 
     override fun analyze(input: ThumbnailInput): Task<EmbeddingObservation> {
         check(!closed.get()) { "图像向量分析器已经释放" }
-        initializationFailure?.let {
-            return Tasks.forException(
-                VisionAnalysisException(VisionModel.ImageEmbedding, "图像向量分析（模型路径：$modelAssetPath）", it),
-            )
-        }
         return try {
-            val image = BitmapImageBuilder(input.bitmap).build()
-            try {
-                val result = requireNotNull(embedder).embed(image)
-                val embedding = result.embeddingResult().embeddings().firstOrNull()
-                    ?: error("MediaPipe 未返回图像向量")
-                Tasks.forResult(EmbeddingObservationMapper.map(embedding.floatEmbedding()))
-            } finally {
-                image.close()
-            }
+            Tasks.forResult(analyzeSynchronously(input))
         } catch (error: Exception) {
-            Tasks.forException(VisionAnalysisException(VisionModel.ImageEmbedding, "图像向量分析", error))
+            Tasks.forException(
+                if (error is VisionAnalysisException) {
+                    error
+                } else {
+                    VisionAnalysisException(VisionModel.ImageEmbedding, "图像向量分析", error)
+                },
+            )
         }
     }
 
+    override fun analyzeSynchronously(input: ThumbnailInput): EmbeddingObservation =
+        synchronized(inferenceLock) {
+            check(!closed.get()) { "图像向量分析器已经释放" }
+            initializationFailure?.let {
+                throw VisionAnalysisException(
+                    VisionModel.ImageEmbedding,
+                    "图像向量分析（模型路径：$modelAssetPath）",
+                    it,
+                )
+            }
+            try {
+                val image = BitmapImageBuilder(input.bitmap).build()
+                try {
+                    val result = requireNotNull(embedder).embed(image)
+                    val embedding = result.embeddingResult().embeddings().firstOrNull()
+                        ?: error("MediaPipe 未返回图像向量")
+                    EmbeddingObservationMapper.map(embedding.floatEmbedding())
+                } finally {
+                    image.close()
+                }
+            } catch (error: Exception) {
+                if (error is VisionAnalysisException) throw error
+                throw VisionAnalysisException(VisionModel.ImageEmbedding, "图像向量分析", error)
+            }
+        }
+
     override fun close() {
-        if (closed.compareAndSet(false, true)) embedder?.close()
+        synchronized(inferenceLock) {
+            if (closed.compareAndSet(false, true)) embedder?.close()
+        }
     }
 }
