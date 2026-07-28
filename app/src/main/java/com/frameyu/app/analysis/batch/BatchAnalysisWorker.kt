@@ -83,6 +83,10 @@ interface BatchAnalysisLifecycleStore {
     suspend fun cancelBatch(batchId: Long)
 
     suspend fun retryFailures(batchId: Long)
+
+    suspend fun markBatchNeedsAttention(batchId: Long, message: String)
+
+    suspend fun reconcilableBatchIds(): List<Long>
 }
 
 interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
@@ -180,6 +184,12 @@ class RoomBatchAnalysisStore(
     override suspend fun retryFailures(batchId: Long) {
         dao.retryFailures(batchId, nowMillis())
     }
+
+    override suspend fun markBatchNeedsAttention(batchId: Long, message: String) {
+        dao.markBatchNeedsAttention(batchId, message, nowMillis())
+    }
+
+    override suspend fun reconcilableBatchIds(): List<Long> = dao.reconcilableBatchIds()
 
     private companion object {
         const val INTERRUPTED_MESSAGE = "批量分析进程中断"

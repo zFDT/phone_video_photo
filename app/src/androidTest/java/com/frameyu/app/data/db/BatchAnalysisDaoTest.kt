@@ -310,6 +310,54 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun reconcilableBatchesAndEnqueueFailureStateArePersistent() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val queuedBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(
+                    workItem(46L, 1L, "QUALITY"),
+                    workItem(47L, 2L, "QUALITY", status = "COMPLETED"),
+                ),
+            )
+            val completedBatchId = dao.createBatch(
+                batch = batch().copy(status = "COMPLETED"),
+                items = listOf(workItem(48L, 1L, "QUALITY", status = "COMPLETED")),
+            )
+
+            assertEquals(listOf(queuedBatchId), dao.reconcilableBatchIds())
+
+            dao.markBatchNeedsAttention(
+                queuedBatchId,
+                message = "WorkManager 入队失败",
+                updatedAtMillis = 50L,
+            )
+
+            assertEquals("NEEDS_ATTENTION", dao.batchStatus(queuedBatchId))
+            assertWorkItem(
+                database,
+                itemId = 46L,
+                expectedStatus = "RETRYABLE_FAILED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+                expectedErrorMessage = "WorkManager 入队失败",
+            )
+            assertWorkItem(
+                database,
+                itemId = 47L,
+                expectedStatus = "COMPLETED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
+            assertTrue(completedBatchId !in dao.reconcilableBatchIds())
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun classificationAndDetectionWritesReplaceCompleteNaturalKeySets() = runBlocking {
         val database = createDatabase()
         try {

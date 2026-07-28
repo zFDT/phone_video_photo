@@ -10,7 +10,7 @@ import org.junit.Test
 
 class BatchAnalysisSchedulerTest {
     @Test
-    fun `enqueue 使用固定唯一名称追加并只传 batch_id`() {
+    fun `enqueue 使用固定唯一名称追加并只传 batch_id`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager()
         val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore())
 
@@ -142,6 +142,62 @@ class BatchAnalysisSchedulerTest {
             },
         )
     }
+
+    @Test
+    fun `enqueue 失败先持久化 NEEDS_ATTENTION 再向调用方传播`() = runBlocking {
+        val events = mutableListOf<String>()
+        val enqueueFailure = IllegalStateException("WorkManager 数据库不可写")
+        val workManager = FakeBatchSchedulerWorkManager(events).apply {
+            failure = enqueueFailure
+        }
+        val scheduler = BatchAnalysisScheduler(
+            workManager,
+            RecordingLifecycleStore(events),
+        )
+
+        val thrown = runCatching { scheduler.enqueue(9L) }.exceptionOrNull()
+
+        assertEquals(enqueueFailure, thrown)
+        assertEquals(
+            listOf(
+                "work.enqueue:frameyu-batch-analysis:9",
+                "store.needs-attention:9:批量任务入队失败",
+            ),
+            events,
+        )
+    }
+
+    @Test
+    fun `reconcile 跳过已有 active request 并只补缺失批次`() = runBlocking {
+        val workManager = FakeBatchSchedulerWorkManager().apply {
+            activeBatchIds += 2L
+        }
+        val store = RecordingLifecycleStore().apply {
+            reconcilableBatchIds += listOf(1L, 2L, 3L)
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, store)
+
+        val enqueued = scheduler.reconcilePendingBatches()
+
+        assertEquals(listOf(1L, 3L), enqueued.keys.toList())
+        assertEquals(listOf(1L, 3L), workManager.enqueued.map(EnqueuedBatchWork::batchId))
+    }
+
+    @Test
+    fun `重复 reconcile 对账保持幂等且不取消任何节点`() = runBlocking {
+        val workManager = FakeBatchSchedulerWorkManager()
+        val store = RecordingLifecycleStore().apply {
+            reconcilableBatchIds += listOf(4L, 5L)
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, store)
+
+        val first = scheduler.reconcilePendingBatches()
+        val second = scheduler.reconcilePendingBatches()
+
+        assertEquals(setOf(4L, 5L), first.keys)
+        assertTrue(second.isEmpty())
+        assertEquals(listOf(4L, 5L), workManager.enqueued.map(EnqueuedBatchWork::batchId))
+    }
 }
 
 private data class EnqueuedBatchWork(
@@ -157,8 +213,10 @@ private class FakeBatchSchedulerWorkManager(
     private val events: MutableList<String> = mutableListOf(),
 ) : BatchSchedulerWorkManager {
     val enqueued = mutableListOf<EnqueuedBatchWork>()
+    val activeBatchIds = linkedSetOf<Long>()
+    var failure: Exception? = null
 
-    override fun enqueueUniqueWork(
+    override suspend fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
@@ -166,12 +224,18 @@ private class FakeBatchSchedulerWorkManager(
         enqueued += EnqueuedBatchWork(uniqueWorkName, existingWorkPolicy, request)
         val batchId = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
         events += "work.enqueue:$uniqueWorkName:$batchId"
+        failure?.let { throw it }
+        activeBatchIds += batchId
     }
+
+    override suspend fun activeBatchIds(): Set<Long> = activeBatchIds.toSet()
 }
 
 private class RecordingLifecycleStore(
     private val events: MutableList<String> = mutableListOf(),
 ) : BatchAnalysisLifecycleStore {
+    val reconcilableBatchIds = mutableListOf<Long>()
+
     override suspend fun pauseBatch(batchId: Long) {
         events += "store.pause:$batchId"
     }
@@ -187,4 +251,10 @@ private class RecordingLifecycleStore(
     override suspend fun retryFailures(batchId: Long) {
         events += "store.retry:$batchId"
     }
+
+    override suspend fun markBatchNeedsAttention(batchId: Long, message: String) {
+        events += "store.needs-attention:$batchId:$message"
+    }
+
+    override suspend fun reconcilableBatchIds(): List<Long> = reconcilableBatchIds.toList()
 }

@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import android.util.Log
 import androidx.room.Room
 import androidx.work.Configuration
 import androidx.work.DelegatingWorkerFactory
@@ -36,8 +37,15 @@ import com.frameyu.app.vision.MediaPipeObjectDetectorAnalyzer
 import com.frameyu.app.vision.model.ModelAssetCatalog
 import com.frameyu.app.vision.model.ModelDescriptor
 import com.frameyu.app.vision.model.ModelId
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class FrameYuApplication : Application(), Configuration.Provider {
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     lateinit var database: FrameYuDatabase
         private set
 
@@ -112,6 +120,15 @@ class FrameYuApplication : Application(), Configuration.Provider {
         )
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
+        applicationScope.launch {
+            try {
+                batchAnalysisWorkScheduler.reconcilePendingBatches()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e(TAG, "批量任务启动对账失败", error)
+            }
+        }
     }
 
     private fun createVideoAnalysisNotificationChannel() {
@@ -164,6 +181,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
     private fun ModelDescriptor.assetPath(): String = "models/$fileName"
 
     private companion object {
+        const val TAG = "FrameYuApplication"
         const val MODEL_MANIFEST_PATH = "models/model-manifest.properties"
     }
 }

@@ -4,9 +4,13 @@ import android.content.Context
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private const val BATCH_TAG_PREFIX = "frameyu-batch:"
 
@@ -20,14 +24,27 @@ class BatchAnalysisScheduler internal constructor(
     private val workManager: BatchSchedulerWorkManager,
     private val store: BatchAnalysisLifecycleStore,
 ) {
-    fun enqueue(batchId: Long): UUID {
+    suspend fun enqueue(batchId: Long): UUID {
         requireBatchId(batchId)
         val request = requestFor(batchId)
-        workManager.enqueueUniqueWork(
-            BatchAnalysisWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.APPEND_OR_REPLACE,
-            request,
-        )
+        try {
+            workManager.enqueueUniqueWork(
+                BatchAnalysisWorker.UNIQUE_WORK_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                request,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            try {
+                store.markBatchNeedsAttention(batchId, ENQUEUE_FAILURE_MESSAGE)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (persistenceError: Exception) {
+                error.addSuppressed(persistenceError)
+            }
+            throw error
+        }
         return request.id
     }
 
@@ -53,6 +70,16 @@ class BatchAnalysisScheduler internal constructor(
         return enqueue(batchId)
     }
 
+    suspend fun reconcilePendingBatches(): Map<Long, UUID> {
+        val activeBatchIds = workManager.activeBatchIds()
+        return buildMap {
+            store.reconcilableBatchIds()
+                .distinct()
+                .filterNot(activeBatchIds::contains)
+                .forEach { batchId -> put(batchId, enqueue(batchId)) }
+        }
+    }
+
     private fun requestFor(batchId: Long): OneTimeWorkRequest =
         OneTimeWorkRequestBuilder<BatchAnalysisWorker>()
             .setInputData(workDataOf(BatchAnalysisWorker.KEY_BATCH_ID to batchId))
@@ -64,6 +91,8 @@ class BatchAnalysisScheduler internal constructor(
     }
 
     companion object {
+        private const val ENQUEUE_FAILURE_MESSAGE = "批量任务入队失败"
+
         fun from(
             context: Context,
             store: BatchAnalysisLifecycleStore,
@@ -77,21 +106,41 @@ class BatchAnalysisScheduler internal constructor(
 }
 
 internal interface BatchSchedulerWorkManager {
-    fun enqueueUniqueWork(
+    suspend fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
     )
+
+    suspend fun activeBatchIds(): Set<Long>
 }
 
 private class WorkManagerBatchSchedulerWorkManager(
     private val workManager: WorkManager,
 ) : BatchSchedulerWorkManager {
-    override fun enqueueUniqueWork(
+    override suspend fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
     ) {
-        workManager.enqueueUniqueWork(uniqueWorkName, existingWorkPolicy, request)
+        withContext(Dispatchers.IO) {
+            workManager.enqueueUniqueWork(uniqueWorkName, existingWorkPolicy, request)
+                .result
+                .get()
+        }
+    }
+
+    override suspend fun activeBatchIds(): Set<Long> = withContext(Dispatchers.IO) {
+        workManager.getWorkInfosForUniqueWork(BatchAnalysisWorker.UNIQUE_WORK_NAME)
+            .get()
+            .asSequence()
+            .filter { workInfo -> !workInfo.state.isFinished }
+            .mapNotNull(WorkInfo::batchId)
+            .toSet()
     }
 }
+
+private fun WorkInfo.batchId(): Long? = tags.asSequence()
+    .filter { tag -> tag.startsWith(BATCH_TAG_PREFIX) }
+    .map { tag -> tag.removePrefix(BATCH_TAG_PREFIX).toLongOrNull() }
+    .firstOrNull { batchId -> batchId != null && batchId > 0L }

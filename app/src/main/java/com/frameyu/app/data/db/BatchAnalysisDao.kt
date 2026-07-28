@@ -426,6 +426,65 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = 'RETRYABLE_FAILED',
+            error_message = :message,
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('PENDING', 'RUNNING', 'PAUSED')
+        """
+    )
+    protected abstract suspend fun failUnscheduledItems(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    /**
+     * WorkManager 入队失败时保留已完成结果，并把未执行项转换为可显式重试状态。
+     */
+    @Transaction
+    open suspend fun markBatchNeedsAttention(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ) {
+        val status = batchStatus(batchId)
+        if (status == "NEEDS_ATTENTION") return
+        check(status in setOf("QUEUED", "RUNNING")) {
+            "批次 id=$batchId 当前状态不允许标记待处理：$status"
+        }
+        failUnscheduledItems(batchId, message, updatedAtMillis)
+        checkBatchTransitionUpdated(
+            updateBatchStatusFromInternal(
+                batchId,
+                "NEEDS_ATTENTION",
+                updatedAtMillis,
+                listOf("QUEUED", "RUNNING"),
+            ),
+            batchId,
+            "标记待处理",
+        )
+    }
+
+    @Query(
+        """
+        SELECT b.id
+        FROM analysis_batches AS b
+        WHERE b.status IN ('QUEUED', 'RUNNING')
+          AND EXISTS (
+              SELECT 1
+              FROM analysis_work_items AS w
+              WHERE w.batch_id = b.id
+                AND w.status NOT IN ('COMPLETED', 'CANCELLED')
+          )
+        ORDER BY b.id
+        """
+    )
+    abstract suspend fun reconcilableBatchIds(): List<Long>
+
     @Transaction
     open suspend fun retryFailures(batchId: Long, updatedAtMillis: Long) {
         val status = batchStatus(batchId)

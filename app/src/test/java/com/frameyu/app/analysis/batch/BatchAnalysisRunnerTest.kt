@@ -689,6 +689,48 @@ private class FakeBatchAnalysisStore(
         }
     }
 
+    override suspend fun markBatchNeedsAttention(batchId: Long, message: String) {
+        requireBatch(batchId)
+        if (batchStatus == BatchAnalysisStatus.NEEDS_ATTENTION.name) return
+        check(batchStatus in setOf(
+            BatchAnalysisStatus.QUEUED.name,
+            BatchAnalysisStatus.RUNNING.name,
+        ))
+        items.replaceAll { _, item ->
+            if (item.status in setOf(
+                    WorkItemStatus.PENDING.name,
+                    WorkItemStatus.RUNNING.name,
+                    WorkItemStatus.PAUSED.name,
+                )
+            ) {
+                item.copy(
+                    status = WorkItemStatus.RETRYABLE_FAILED.name,
+                    errorMessage = message,
+                )
+            } else {
+                item
+            }
+        }
+        batchStatus = BatchAnalysisStatus.NEEDS_ATTENTION.name
+    }
+
+    override suspend fun reconcilableBatchIds(): List<Long> =
+        if (batchStatus in setOf(
+                BatchAnalysisStatus.QUEUED.name,
+                BatchAnalysisStatus.RUNNING.name,
+            ) &&
+            items.values.any {
+                it.status !in setOf(
+                    WorkItemStatus.COMPLETED.name,
+                    WorkItemStatus.CANCELLED.name,
+                )
+            }
+        ) {
+            listOf(BATCH_ID)
+        } else {
+            emptyList()
+        }
+
     private fun requireBatch(batchId: Long) {
         require(batchId == BATCH_ID)
     }
