@@ -74,11 +74,11 @@ class BatchAnalysisExecutionTest {
         val original = IllegalStateException("Runner 失败")
         val persistence = IllegalStateException("数据库只读")
         val execution = BatchAnalysisExecution(
-            runBatch = { _, _, afterClaim ->
-                afterClaim()
+            runBatch = { _, _, _, onClaimed ->
+                onClaimed()
                 throw original
             },
-            failActiveExecution = { _, _ -> throw persistence },
+            failActiveExecution = { _, _, _ -> throw persistence },
             logger = BatchExecutionLogger { batchId, runAttemptCount, error, persistenceError ->
                 logs += ExecutionFailureLog(batchId, runAttemptCount, error, persistenceError)
             },
@@ -107,7 +107,7 @@ class BatchAnalysisExecutionTest {
     }
 
     @Test
-    fun `前台准备的包装 IOException 纳入有限重试边界`() = runBlocking {
+    fun `claim 后前台准备的包装 IOException 纳入有限重试边界`() = runBlocking {
         var runCalls = 0
         val execution = execution(
             runBatch = {
@@ -119,7 +119,7 @@ class BatchAnalysisExecutionTest {
         val outcome = execution.execute(
             batchId = BATCH_ID,
             runAttemptCount = 0,
-            beforeRun = {
+            onClaimed = {
                 throw IllegalStateException(
                     "前台服务启动失败",
                     IOException("通知服务暂不可用"),
@@ -132,7 +132,7 @@ class BatchAnalysisExecutionTest {
     }
 
     @Test
-    fun `前台准备普通异常达到边界后持久化并释放共享链`() = runBlocking {
+    fun `claim 后前台准备普通异常达到边界后持久化并释放共享链`() = runBlocking {
         var persistedMessage = ""
         val execution = execution(
             runBatch = { result() },
@@ -145,7 +145,7 @@ class BatchAnalysisExecutionTest {
         val outcome = execution.execute(
             batchId = BATCH_ID,
             runAttemptCount = 2,
-            beforeRun = { throw IllegalStateException("无法切换前台任务") },
+            onClaimed = { throw IllegalStateException("无法切换前台任务") },
         )
 
         assertTrue(outcome is BatchExecutionOutcome.Success)
@@ -153,7 +153,7 @@ class BatchAnalysisExecutionTest {
     }
 
     @Test
-    fun `前台准备的 CancellationException 与 Error 原样传播`() = runBlocking {
+    fun `claim 后前台准备的 CancellationException 与 Error 原样传播`() = runBlocking {
         val cancellation = CancellationException("前台准备取消")
         val fatal = AssertionError("前台准备致命错误")
         val execution = execution(runBatch = { result() })
@@ -161,13 +161,13 @@ class BatchAnalysisExecutionTest {
         assertSame(
             cancellation,
             runCatching {
-                execution.execute(BATCH_ID, 0, beforeRun = { throw cancellation })
+                execution.execute(BATCH_ID, 0, onClaimed = { throw cancellation })
             }.exceptionOrNull(),
         )
         assertSame(
             fatal,
             runCatching {
-                execution.execute(BATCH_ID, 0, beforeRun = { throw fatal })
+                execution.execute(BATCH_ID, 0, onClaimed = { throw fatal })
             }.exceptionOrNull(),
         )
     }
@@ -219,11 +219,11 @@ class BatchAnalysisExecutionTest {
         runBatch: suspend (Long) -> BatchAnalysisResult,
         failActive: suspend (Long, String) -> BatchAnalysisResult = { _, _ -> result() },
     ) = BatchAnalysisExecution(
-        runBatch = { batchId, _, afterClaim ->
-            afterClaim()
+        runBatch = { batchId, _, _, onClaimed ->
+            onClaimed()
             runBatch(batchId)
         },
-        failActiveExecution = failActive,
+        failActiveExecution = { batchId, _, message -> failActive(batchId, message) },
         logger = BatchExecutionLogger { _, _, _, _ -> },
     )
 

@@ -193,7 +193,7 @@ interface AnalysisTaskDao {
         MediaFeatureReferenceEntity::class,
         MediaQualityResultEntity::class,
     ],
-    version = 4
+    version = 5
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -383,6 +383,15 @@ abstract class FrameYuDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_media_quality_results_media_asset_id` " +
                         "ON `media_quality_results` (`media_asset_id`)"
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE analysis_batches " +
+                        "ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }

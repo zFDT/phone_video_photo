@@ -16,7 +16,7 @@ import org.junit.Test
 
 class BatchAnalysisSchedulerTest {
     @Test
-    fun `enqueue 使用固定唯一名称追加并只传 batch_id`() = runBlocking {
+    fun `enqueue 使用固定唯一名称并携带 batch 与 generation`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager()
         val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore())
 
@@ -33,7 +33,18 @@ class BatchAnalysisSchedulerTest {
             ),
         )
         assertEquals(
-            setOf("com.frameyu.app.analysis.batch.BatchAnalysisWorker", "frameyu-batch:42"),
+            0L,
+            workManager.enqueued.single().request.workSpec.input.getLong(
+                BatchAnalysisWorker.KEY_EXECUTION_GENERATION,
+                -1L,
+            ),
+        )
+        assertEquals(
+            setOf(
+                "com.frameyu.app.analysis.batch.BatchAnalysisWorker",
+                "frameyu-batch:42",
+                "frameyu-batch-execution:42:0",
+            ),
             workManager.enqueued.single().request.tags,
         )
     }
@@ -65,10 +76,8 @@ class BatchAnalysisSchedulerTest {
     @Test
     fun `resume 先持久化再追加到唯一链`() = runBlocking {
         val events = mutableListOf<String>()
-        val scheduler = BatchAnalysisScheduler(
-            FakeBatchSchedulerWorkManager(events = events),
-            RecordingLifecycleStore(events),
-        )
+        val workManager = FakeBatchSchedulerWorkManager(events = events)
+        val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore(events))
 
         scheduler.resume(3L)
 
@@ -76,6 +85,7 @@ class BatchAnalysisSchedulerTest {
             listOf("store.resume:3", "work.enqueue:frameyu-batch-analysis:3"),
             events,
         )
+        assertEquals(1L, workManager.enqueued.single().executionGeneration)
     }
 
     @Test
@@ -176,10 +186,14 @@ class BatchAnalysisSchedulerTest {
     @Test
     fun `reconcile 跳过已有 active request 并只补缺失批次`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager().apply {
-            activeBatchIds += 2L
+            activeExecutions += BatchExecutionKey(2L, 0L)
         }
         val store = RecordingLifecycleStore().apply {
-            reconcilableBatchIds += listOf(1L, 2L, 3L)
+            reconcilableExecutions += listOf(
+                BatchExecutionKey(1L, 0L),
+                BatchExecutionKey(2L, 0L),
+                BatchExecutionKey(3L, 0L),
+            )
         }
         val scheduler = BatchAnalysisScheduler(workManager, store)
 
@@ -191,12 +205,33 @@ class BatchAnalysisSchedulerTest {
     }
 
     @Test
+    fun `reconcile 不把旧 generation 的 active request 当作当前执行`() = runBlocking {
+        val workManager = FakeBatchSchedulerWorkManager().apply {
+            activeExecutions += BatchExecutionKey(2L, 0L)
+        }
+        val store = RecordingLifecycleStore().apply {
+            setGeneration(2L, 2L)
+            reconcilableExecutions += BatchExecutionKey(2L, 2L)
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, store)
+
+        val result = scheduler.reconcilePendingBatches()
+
+        assertEquals(listOf(2L), result.enqueued.keys.toList())
+        assertEquals(2L, workManager.enqueued.single().executionGeneration)
+    }
+
+    @Test
     fun `reconcile 隔离单批入队失败并继续补入后续批次`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager().apply {
             failuresByBatch[2L] = IllegalStateException("第二批入队失败")
         }
         val store = RecordingLifecycleStore().apply {
-            reconcilableBatchIds += listOf(1L, 2L, 3L)
+            reconcilableExecutions += listOf(
+                BatchExecutionKey(1L, 0L),
+                BatchExecutionKey(2L, 0L),
+                BatchExecutionKey(3L, 0L),
+            )
         }
         val scheduler = BatchAnalysisScheduler(workManager, store)
 
@@ -214,7 +249,10 @@ class BatchAnalysisSchedulerTest {
     fun `重复 reconcile 对账保持幂等且不取消任何节点`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager()
         val store = RecordingLifecycleStore().apply {
-            reconcilableBatchIds += listOf(4L, 5L)
+            reconcilableExecutions += listOf(
+                BatchExecutionKey(4L, 0L),
+                BatchExecutionKey(5L, 0L),
+            )
         }
         val scheduler = BatchAnalysisScheduler(workManager, store)
 
@@ -277,6 +315,25 @@ class BatchAnalysisSchedulerTest {
         assertTrue(job.isCancelled)
         assertEquals(listOf(8L), workManager.enqueued.map(EnqueuedBatchWork::batchId))
     }
+
+    @Test
+    fun `旧 generation 入队失败不能覆盖新控制代`() = runBlocking {
+        val events = mutableListOf<String>()
+        val store = RecordingLifecycleStore(events)
+        val workManager = FakeBatchSchedulerWorkManager(events).apply {
+            failure = IllegalStateException("旧 request 入队失败")
+            beforeEnqueue = {
+                store.advanceGeneration(9L)
+            }
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, store)
+
+        val failure = runCatching { scheduler.enqueue(9L) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(1L, store.batchExecutionKey(9L).executionGeneration)
+        assertTrue(events.none { event -> event.startsWith("store.needs-attention:9") })
+    }
 }
 
 private data class EnqueuedBatchWork(
@@ -286,13 +343,19 @@ private data class EnqueuedBatchWork(
 ) {
     val batchId: Long
         get() = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
+
+    val executionGeneration: Long
+        get() = request.workSpec.input.getLong(
+            BatchAnalysisWorker.KEY_EXECUTION_GENERATION,
+            -1L,
+        )
 }
 
 private class FakeBatchSchedulerWorkManager(
     private val events: MutableList<String> = mutableListOf(),
 ) : BatchSchedulerWorkManager {
     val enqueued = mutableListOf<EnqueuedBatchWork>()
-    val activeBatchIds = linkedSetOf<Long>()
+    val activeExecutions = linkedSetOf<BatchExecutionKey>()
     var failure: Exception? = null
     val failuresByBatch = mutableMapOf<Long, Exception>()
     var beforeEnqueue: suspend () -> Unit = {}
@@ -307,38 +370,68 @@ private class FakeBatchSchedulerWorkManager(
         val batchId = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
         events += "work.enqueue:$uniqueWorkName:$batchId"
         (failuresByBatch[batchId] ?: failure)?.let { throw it }
-        activeBatchIds += batchId
+        activeExecutions += BatchExecutionKey(
+            batchId = batchId,
+            executionGeneration = request.workSpec.input.getLong(
+                BatchAnalysisWorker.KEY_EXECUTION_GENERATION,
+                -1L,
+            ),
+        )
     }
 
-    override suspend fun activeBatchIds(): Set<Long> = activeBatchIds.toSet()
+    override suspend fun activeExecutions(): Set<BatchExecutionKey> =
+        activeExecutions.toSet()
 }
 
 private class RecordingLifecycleStore(
     private val events: MutableList<String> = mutableListOf(),
     private val afterResume: suspend () -> Unit = {},
 ) : BatchAnalysisLifecycleStore {
-    val reconcilableBatchIds = mutableListOf<Long>()
+    val reconcilableExecutions = mutableListOf<BatchExecutionKey>()
+    private val generations = mutableMapOf<Long, Long>()
+
+    override suspend fun batchExecutionKey(batchId: Long): BatchExecutionKey =
+        BatchExecutionKey(batchId, generations.getOrDefault(batchId, 0L))
 
     override suspend fun pauseBatch(batchId: Long) {
         events += "store.pause:$batchId"
+        advanceGeneration(batchId)
     }
 
     override suspend fun resumeBatch(batchId: Long) {
         events += "store.resume:$batchId"
+        advanceGeneration(batchId)
         afterResume()
     }
 
     override suspend fun cancelBatch(batchId: Long) {
         events += "store.cancel:$batchId"
+        advanceGeneration(batchId)
     }
 
     override suspend fun retryFailures(batchId: Long) {
         events += "store.retry:$batchId"
+        advanceGeneration(batchId)
     }
 
-    override suspend fun markBatchNeedsAttention(batchId: Long, message: String) {
+    override suspend fun markBatchNeedsAttention(
+        batchId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean {
+        if (generations.getOrDefault(batchId, 0L) != executionGeneration) return false
         events += "store.needs-attention:$batchId:$message"
+        return true
     }
 
-    override suspend fun reconcilableBatchIds(): List<Long> = reconcilableBatchIds.toList()
+    override suspend fun reconcilableExecutions(): List<BatchExecutionKey> =
+        reconcilableExecutions.toList()
+
+    fun setGeneration(batchId: Long, generation: Long) {
+        generations[batchId] = generation
+    }
+
+    fun advanceGeneration(batchId: Long) {
+        generations[batchId] = generations.getOrDefault(batchId, 0L) + 1L
+    }
 }

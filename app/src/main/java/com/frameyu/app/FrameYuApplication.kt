@@ -139,6 +139,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
                 FrameYuDatabase.MIGRATION_1_2,
                 FrameYuDatabase.MIGRATION_2_3,
                 FrameYuDatabase.MIGRATION_3_4,
+                FrameYuDatabase.MIGRATION_4_5,
             )
             .build()
         val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))

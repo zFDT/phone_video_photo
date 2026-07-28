@@ -17,6 +17,12 @@ data class AnalysisBatchEntity(
     val id: Long = 0L,
     val status: String,
     val scope: String = "ALL_MEDIA",
+    /**
+     * WorkRequest 所属控制代：初始为 0；pause/cancel 递增以失效旧执行，
+     * resume/retryFailures 再递增以创建新 attempt。claim、Worker retry 和收尾不递增。
+     */
+    @ColumnInfo(name = "execution_generation", defaultValue = "0")
+    val executionGeneration: Long = 0L,
     @ColumnInfo(name = "created_at_millis")
     val createdAtMillis: Long,
     @ColumnInfo(name = "updated_at_millis")

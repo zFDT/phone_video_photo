@@ -43,8 +43,24 @@ enum class BatchFinalStatus {
 
 data class BatchAnalysisControlState(
     val status: BatchAnalysisStatus,
-    val revision: Long,
+    val executionGeneration: Long,
 )
+
+data class BatchExecutionKey(
+    val batchId: Long,
+    val executionGeneration: Long,
+) {
+    init {
+        require(batchId > 0L) { "批次 ID 必须大于 0" }
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
+    }
+}
+
+private fun BatchAnalysisControlState.key(batchId: Long): BatchExecutionKey =
+    BatchExecutionKey(
+        batchId = batchId,
+        executionGeneration = executionGeneration,
+    )
 
 data class BatchAnalysisSnapshot(
     val total: Int,
@@ -81,6 +97,8 @@ data class BatchAnalysisResult(
 )
 
 interface BatchAnalysisLifecycleStore {
+    suspend fun batchExecutionKey(batchId: Long): BatchExecutionKey
+
     suspend fun pauseBatch(batchId: Long)
 
     suspend fun resumeBatch(batchId: Long)
@@ -89,9 +107,13 @@ interface BatchAnalysisLifecycleStore {
 
     suspend fun retryFailures(batchId: Long)
 
-    suspend fun markBatchNeedsAttention(batchId: Long, message: String)
+    suspend fun markBatchNeedsAttention(
+        batchId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean
 
-    suspend fun reconcilableBatchIds(): List<Long>
+    suspend fun reconcilableExecutions(): List<BatchExecutionKey>
 }
 
 interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
@@ -101,7 +123,7 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun batchControlState(batchId: Long): BatchAnalysisControlState
 
-    suspend fun markBatchRunning(batchId: Long, expectedRevision: Long): Boolean
+    suspend fun markBatchRunning(batchId: Long, executionGeneration: Long): Boolean
 
     suspend fun nextRunnableItems(
         batchId: Long,
@@ -115,11 +137,19 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean
 
-    suspend fun failActiveExecution(batchId: Long, message: String): Boolean
+    suspend fun failActiveExecution(
+        batchId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean
 
     suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot
 
-    suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean
+    suspend fun finishBatch(
+        batchId: Long,
+        executionGeneration: Long,
+        status: BatchFinalStatus,
+    ): Boolean
 }
 
 fun interface BatchWorkItemCoordinator {
@@ -142,12 +172,17 @@ class RoomBatchAnalysisStore(
         val control = dao.batchControlState(batchId)
         return BatchAnalysisControlState(
             status = BatchAnalysisStatus.fromPersisted(control.status),
-            revision = control.updatedAtMillis,
+            executionGeneration = control.executionGeneration,
         )
     }
 
-    override suspend fun markBatchRunning(batchId: Long, expectedRevision: Long): Boolean =
-        dao.markBatchRunning(batchId, nowMillis(), expectedRevision)
+    override suspend fun batchExecutionKey(batchId: Long): BatchExecutionKey =
+        batchControlState(batchId).key(batchId)
+
+    override suspend fun markBatchRunning(
+        batchId: Long,
+        executionGeneration: Long,
+    ): Boolean = dao.markBatchRunning(batchId, executionGeneration, nowMillis())
 
     override suspend fun nextRunnableItems(
         batchId: Long,
@@ -164,8 +199,11 @@ class RoomBatchAnalysisStore(
     override suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean =
         dao.failItem(itemId, retryable, message, nowMillis())
 
-    override suspend fun failActiveExecution(batchId: Long, message: String): Boolean =
-        dao.failActiveExecution(batchId, message, nowMillis())
+    override suspend fun failActiveExecution(
+        batchId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean = dao.failActiveExecution(batchId, executionGeneration, message, nowMillis())
 
     override suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot {
         val counts = dao.batchCounts(batchId)
@@ -181,8 +219,11 @@ class RoomBatchAnalysisStore(
         )
     }
 
-    override suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean =
-        dao.finishBatch(batchId, status.name, nowMillis())
+    override suspend fun finishBatch(
+        batchId: Long,
+        executionGeneration: Long,
+        status: BatchFinalStatus,
+    ): Boolean = dao.finishBatch(batchId, executionGeneration, status.name, nowMillis())
 
     override suspend fun pauseBatch(batchId: Long) {
         dao.pauseBatch(batchId, nowMillis())
@@ -200,11 +241,24 @@ class RoomBatchAnalysisStore(
         dao.retryFailures(batchId, nowMillis())
     }
 
-    override suspend fun markBatchNeedsAttention(batchId: Long, message: String) {
-        dao.markBatchNeedsAttention(batchId, message, nowMillis())
-    }
+    override suspend fun markBatchNeedsAttention(
+        batchId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean = dao.markBatchNeedsAttention(
+        batchId,
+        executionGeneration,
+        message,
+        nowMillis(),
+    )
 
-    override suspend fun reconcilableBatchIds(): List<Long> = dao.reconcilableBatchIds()
+    override suspend fun reconcilableExecutions(): List<BatchExecutionKey> =
+        dao.reconcilableExecutions().map { execution ->
+            BatchExecutionKey(
+                batchId = execution.batchId,
+                executionGeneration = execution.executionGeneration,
+            )
+        }
 
     private companion object {
         const val INTERRUPTED_MESSAGE = "批量分析进程中断"
@@ -252,15 +306,32 @@ class BatchAnalysisRunner(
     suspend fun run(
         batchId: Long,
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
-    ): BatchAnalysisResult = run(batchId, onProgress, afterClaim = {})
+    ): BatchAnalysisResult {
+        val execution = store.batchExecutionKey(batchId)
+        return run(
+            batchId = batchId,
+            executionGeneration = execution.executionGeneration,
+            onProgress = onProgress,
+            onClaimed = {},
+        )
+    }
 
     internal suspend fun run(
         batchId: Long,
+        executionGeneration: Long,
         onProgress: suspend (BatchAnalysisProgress) -> Unit,
-        afterClaim: suspend () -> Unit,
+        onClaimed: suspend () -> Unit,
     ): BatchAnalysisResult {
         require(batchId > 0L) { "批次 ID 必须大于 0" }
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
         val initialControl = store.batchControlState(batchId)
+        if (initialControl.executionGeneration != executionGeneration) {
+            return controlledResult(
+                batchId,
+                paused = initialControl.status == BatchAnalysisStatus.PAUSED,
+                cancelled = initialControl.status == BatchAnalysisStatus.CANCELLED,
+            )
+        }
         when (initialControl.status) {
             BatchAnalysisStatus.QUEUED,
             BatchAnalysisStatus.RUNNING,
@@ -272,11 +343,11 @@ class BatchAnalysisRunner(
             -> return controlledResult(batchId)
         }
 
-        store.recoverInterrupted(batchId)
-        if (!store.markBatchRunning(batchId, initialControl.revision)) {
-            return resultAfterRejectedTransition(batchId)
+        if (!store.markBatchRunning(batchId, executionGeneration)) {
+            return resultAfterRejectedTransition(batchId, executionGeneration)
         }
-        afterClaim()
+        store.recoverInterrupted(batchId)
+        onClaimed()
 
         var localSnapshot = store.snapshot(batchId)
         var coordinator: BatchWorkItemCoordinator? = null
@@ -290,6 +361,7 @@ class BatchAnalysisRunner(
             for (item in page) {
                 controlledResultForNonRunningState(
                     batchId,
+                    executionGeneration,
                     currentStage,
                     currentMediaId,
                 )?.let { return it }
@@ -300,6 +372,7 @@ class BatchAnalysisRunner(
                 if (!store.markRunning(item.id)) {
                     return resultAfterRejectedTransition(
                         batchId,
+                        executionGeneration,
                         currentStage = currentStage,
                         currentMediaId = currentMediaId,
                     )
@@ -319,6 +392,7 @@ class BatchAnalysisRunner(
                     if (!store.failItem(item.id, retryable, error.failureMessage())) {
                         return resultAfterRejectedTransition(
                             batchId,
+                            executionGeneration,
                             currentStage = currentStage,
                             currentMediaId = currentMediaId,
                         )
@@ -330,6 +404,7 @@ class BatchAnalysisRunner(
 
                 controlledResultForNonRunningState(
                     batchId,
+                    executionGeneration,
                     currentStage,
                     currentMediaId,
                 )?.let { return it }
@@ -337,6 +412,7 @@ class BatchAnalysisRunner(
                 if (!store.completeItem(item.id)) {
                     return resultAfterRejectedTransition(
                         batchId,
+                        executionGeneration,
                         currentStage = currentStage,
                         currentMediaId = currentMediaId,
                     )
@@ -349,6 +425,7 @@ class BatchAnalysisRunner(
 
         controlledResultForNonRunningState(
             batchId,
+            executionGeneration,
             currentStage,
             currentMediaId,
         )?.let { return it }
@@ -359,9 +436,10 @@ class BatchAnalysisRunner(
         } else {
             BatchFinalStatus.COMPLETED
         }
-        if (!store.finishBatch(batchId, finalStatus)) {
+        if (!store.finishBatch(batchId, executionGeneration, finalStatus)) {
             return resultAfterRejectedTransition(
                 batchId,
+                executionGeneration,
                 currentStage = currentStage,
                 currentMediaId = currentMediaId,
             )
@@ -374,10 +452,11 @@ class BatchAnalysisRunner(
 
     internal suspend fun failActiveExecution(
         batchId: Long,
+        executionGeneration: Long,
         message: String,
     ): BatchAnalysisResult {
-        if (!store.failActiveExecution(batchId, message)) {
-            return resultAfterRejectedTransition(batchId)
+        if (!store.failActiveExecution(batchId, executionGeneration, message)) {
+            return resultAfterRejectedTransition(batchId, executionGeneration)
         }
         return store.snapshot(batchId).toResult(
             currentStage = "",
@@ -399,65 +478,92 @@ class BatchAnalysisRunner(
     )
 
     /**
-     * 条件转换未命中后，只有 QUEUED 才表示旧执行器已被新调度取代。
+     * generation 变化表示旧 WorkRequest 已失去所有权；同代转换未命中再按状态机处理。
      * 数据库异常仍由 Store 原样抛出。
      */
     private suspend fun resultAfterRejectedTransition(
         batchId: Long,
+        executionGeneration: Long,
         currentStage: String = "",
         currentMediaId: Long = -1L,
-    ): BatchAnalysisResult = when (store.batchStatus(batchId)) {
-        BatchAnalysisStatus.PAUSED -> controlledResult(
-            batchId,
-            paused = true,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
-        BatchAnalysisStatus.CANCELLED -> controlledResult(
-            batchId,
-            cancelled = true,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
-        BatchAnalysisStatus.QUEUED,
-        BatchAnalysisStatus.COMPLETED,
-        BatchAnalysisStatus.NEEDS_ATTENTION,
-        -> controlledResult(
-            batchId,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
-        BatchAnalysisStatus.RUNNING -> error(
-            "批次 id=$batchId 仍为 RUNNING，但受保护状态转换未命中",
-        )
+    ): BatchAnalysisResult {
+        val control = store.batchControlState(batchId)
+        if (control.executionGeneration != executionGeneration) {
+            return controlledResult(
+                batchId,
+                paused = control.status == BatchAnalysisStatus.PAUSED,
+                cancelled = control.status == BatchAnalysisStatus.CANCELLED,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+        }
+        return when (control.status) {
+            BatchAnalysisStatus.PAUSED -> controlledResult(
+                batchId,
+                paused = true,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+            BatchAnalysisStatus.CANCELLED -> controlledResult(
+                batchId,
+                cancelled = true,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+            BatchAnalysisStatus.QUEUED,
+            BatchAnalysisStatus.COMPLETED,
+            BatchAnalysisStatus.NEEDS_ATTENTION,
+            -> controlledResult(
+                batchId,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+            BatchAnalysisStatus.RUNNING -> error(
+                "批次 id=$batchId generation=$executionGeneration 仍为 RUNNING，" +
+                    "但受保护状态转换未命中",
+            )
+        }
     }
 
     private suspend fun controlledResultForNonRunningState(
         batchId: Long,
+        executionGeneration: Long,
         currentStage: String,
         currentMediaId: Long,
-    ): BatchAnalysisResult? = when (store.batchStatus(batchId)) {
-        BatchAnalysisStatus.RUNNING -> null
-        BatchAnalysisStatus.PAUSED -> controlledResult(
-            batchId,
-            paused = true,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
-        BatchAnalysisStatus.CANCELLED -> controlledResult(
-            batchId,
-            cancelled = true,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
-        BatchAnalysisStatus.QUEUED,
-        BatchAnalysisStatus.COMPLETED,
-        BatchAnalysisStatus.NEEDS_ATTENTION,
-        -> controlledResult(
-            batchId,
-            currentStage = currentStage,
-            currentMediaId = currentMediaId,
-        )
+    ): BatchAnalysisResult? {
+        val control = store.batchControlState(batchId)
+        if (control.executionGeneration != executionGeneration) {
+            return controlledResult(
+                batchId,
+                paused = control.status == BatchAnalysisStatus.PAUSED,
+                cancelled = control.status == BatchAnalysisStatus.CANCELLED,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+        }
+        return when (control.status) {
+            BatchAnalysisStatus.RUNNING -> null
+            BatchAnalysisStatus.PAUSED -> controlledResult(
+                batchId,
+                paused = true,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+            BatchAnalysisStatus.CANCELLED -> controlledResult(
+                batchId,
+                cancelled = true,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+            BatchAnalysisStatus.QUEUED,
+            BatchAnalysisStatus.COMPLETED,
+            BatchAnalysisStatus.NEEDS_ATTENTION,
+            -> controlledResult(
+                batchId,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
+        }
     }
 
     private companion object {
@@ -481,6 +587,11 @@ class BatchAnalysisWorker(
     override suspend fun doWork(): Result {
         val batchId = inputData.getLong(KEY_BATCH_ID, -1L)
         if (batchId <= 0L) return Result.failure(workerErrorData("缺少有效的批次 ID"))
+        // v4 升级前已经持久化的 WorkRequest 没有该键，对应迁移后的 generation 0。
+        val executionGeneration = inputData.getLong(KEY_EXECUTION_GENERATION, 0L)
+        if (executionGeneration < 0L) {
+            return Result.failure(workerErrorData("缺少有效的执行代际"))
+        }
 
         val execution = BatchAnalysisExecution(
             runBatch = runner::run,
@@ -503,8 +614,9 @@ class BatchAnalysisWorker(
         return when (
             val outcome = execution.execute(
                 batchId = batchId,
+                executionGeneration = executionGeneration,
                 runAttemptCount = runAttemptCount,
-                beforeRun = {
+                onClaimed = {
                     setForeground(
                         createForegroundInfo(
                             batchId,
@@ -554,6 +666,7 @@ class BatchAnalysisWorker(
     companion object {
         const val UNIQUE_WORK_NAME = "frameyu-batch-analysis"
         const val KEY_BATCH_ID = "batch_id"
+        const val KEY_EXECUTION_GENERATION = "execution_generation"
         const val KEY_COMPLETED = "completed"
         const val KEY_FAILED = "failed"
         const val KEY_TOTAL = "total"

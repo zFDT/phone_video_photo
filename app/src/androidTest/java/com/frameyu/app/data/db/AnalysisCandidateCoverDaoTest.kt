@@ -70,7 +70,11 @@ class AnalysisCandidateCoverDaoTest {
         }
 
         val roomDatabase = Room.databaseBuilder(context, FrameYuDatabase::class.java, databaseName)
-            .addMigrations(FrameYuDatabase.MIGRATION_2_3)
+            .addMigrations(
+                FrameYuDatabase.MIGRATION_2_3,
+                FrameYuDatabase.MIGRATION_3_4,
+                FrameYuDatabase.MIGRATION_4_5,
+            )
             .build()
         try {
             val columns = roomDatabase.openHelper.readableDatabase.query("PRAGMA table_info(analysis_candidates)")

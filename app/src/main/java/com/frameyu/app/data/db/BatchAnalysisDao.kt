@@ -204,13 +204,24 @@ abstract class BatchAnalysisDao {
     @Transaction
     open suspend fun failActiveExecution(
         batchId: Long,
+        executionGeneration: Long,
         message: String,
         updatedAtMillis: Long,
     ): Boolean {
-        val status = batchStatus(batchId)
-        if (status != "RUNNING") return false
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
+        val control = batchControlState(batchId)
+        if (control.status != "RUNNING" ||
+            control.executionGeneration != executionGeneration
+        ) {
+            return false
+        }
         failRecoverableItemsInternal(batchId, message, updatedAtMillis)
-        return finishRunningBatchInternal(batchId, "NEEDS_ATTENTION", updatedAtMillis) == 1
+        return finishRunningBatchInternal(
+            batchId,
+            executionGeneration,
+            "NEEDS_ATTENTION",
+            updatedAtMillis,
+        ) == 1
     }
 
     @Query("SELECT status FROM analysis_batches WHERE id = :batchId")
@@ -223,7 +234,7 @@ abstract class BatchAnalysisDao {
 
     @Query(
         """
-        SELECT status, updated_at_millis
+        SELECT status, execution_generation
         FROM analysis_batches
         WHERE id = :batchId
         """
@@ -249,7 +260,8 @@ abstract class BatchAnalysisDao {
         """
         UPDATE analysis_batches
         SET status = :status,
-            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
+            execution_generation = execution_generation + 1,
+            updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
           AND status IN (:sourceStatuses)
         """
@@ -265,49 +277,56 @@ abstract class BatchAnalysisDao {
         """
         UPDATE analysis_batches
         SET status = 'RUNNING',
-            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
+            updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
           AND status IN ('QUEUED', 'RUNNING')
-          AND updated_at_millis = :expectedRevision
+          AND execution_generation = :executionGeneration
         """
     )
     protected abstract suspend fun markBatchRunningInternal(
         batchId: Long,
+        executionGeneration: Long,
         updatedAtMillis: Long,
-        expectedRevision: Long,
     ): Int
 
     @Query(
         """
         UPDATE analysis_batches
         SET status = :status,
-            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
+            updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
           AND status = 'RUNNING'
+          AND execution_generation = :executionGeneration
         """
     )
     protected abstract suspend fun finishRunningBatchInternal(
         batchId: Long,
+        executionGeneration: Long,
         status: String,
         updatedAtMillis: Long,
     ): Int
 
-    /** 兼容旧调用方，事务内读取当前修订号后立即 claim。 */
+    /** 兼容旧调用方，事务内读取当前执行代际后立即 claim。 */
     @Transaction
     open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long): Boolean {
         val control = batchControlState(batchId)
-        return markBatchRunningInternal(batchId, updatedAtMillis, control.updatedAtMillis) == 1
+        return markBatchRunningInternal(
+            batchId,
+            control.executionGeneration,
+            updatedAtMillis,
+        ) == 1
     }
 
-    /** 批次不存在时抛错；控制态或修订号已变化时返回 false。 */
+    /** 批次不存在时抛错；控制态或执行代际已变化时返回 false。 */
     @Transaction
     open suspend fun markBatchRunning(
         batchId: Long,
+        executionGeneration: Long,
         updatedAtMillis: Long,
-        expectedRevision: Long,
     ): Boolean {
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
         batchStatus(batchId)
-        return markBatchRunningInternal(batchId, updatedAtMillis, expectedRevision) == 1
+        return markBatchRunningInternal(batchId, executionGeneration, updatedAtMillis) == 1
     }
 
     @Query(
@@ -483,42 +502,61 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    @Query(
+        """
+        UPDATE analysis_batches
+        SET status = 'NEEDS_ATTENTION',
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :batchId
+          AND execution_generation = :executionGeneration
+          AND status IN ('QUEUED', 'RUNNING')
+        """
+    )
+    protected abstract suspend fun markBatchNeedsAttentionInternal(
+        batchId: Long,
+        executionGeneration: Long,
+        updatedAtMillis: Long,
+    ): Int
+
     /**
      * WorkManager 入队失败时保留已完成结果，并把未执行项转换为可显式重试状态。
      */
     @Transaction
     open suspend fun markBatchNeedsAttention(
         batchId: Long,
+        executionGeneration: Long,
         message: String,
         updatedAtMillis: Long,
-    ) {
-        val status = batchStatus(batchId)
-        if (status == "NEEDS_ATTENTION") return
-        check(status in setOf("QUEUED", "RUNNING")) {
-            "批次 id=$batchId 当前状态不允许标记待处理：$status"
+    ): Boolean {
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
+        val control = batchControlState(batchId)
+        if (control.executionGeneration != executionGeneration) return false
+        if (control.status == "NEEDS_ATTENTION") return true
+        check(control.status in setOf("QUEUED", "RUNNING")) {
+            "批次 id=$batchId 当前状态不允许标记待处理：${control.status}"
+        }
+        if (markBatchNeedsAttentionInternal(
+                batchId,
+                executionGeneration,
+                updatedAtMillis,
+            ) != 1
+        ) {
+            return false
         }
         failUnscheduledItems(batchId, message, updatedAtMillis)
-        checkBatchTransitionUpdated(
-            updateBatchStatusFromInternal(
-                batchId,
-                "NEEDS_ATTENTION",
-                updatedAtMillis,
-                listOf("QUEUED", "RUNNING"),
-            ),
-            batchId,
-            "标记待处理",
-        )
+        return true
     }
 
     @Query(
         """
-        SELECT b.id
+        SELECT b.id AS batch_id,
+               b.execution_generation
         FROM analysis_batches AS b
         WHERE b.status IN ('QUEUED', 'RUNNING')
         ORDER BY b.id
         """
     )
-    abstract suspend fun reconcilableBatchIds(): List<Long>
+    abstract suspend fun reconcilableExecutions(): List<BatchExecutionRecord>
 
     @Transaction
     open suspend fun retryFailures(batchId: Long, updatedAtMillis: Long) {
@@ -542,14 +580,21 @@ abstract class BatchAnalysisDao {
     @Transaction
     open suspend fun finishBatch(
         batchId: Long,
+        executionGeneration: Long,
         status: String,
         updatedAtMillis: Long,
     ): Boolean {
+        require(executionGeneration >= 0L) { "执行代际不能为负数" }
         require(status in setOf("COMPLETED", "NEEDS_ATTENTION")) {
             "批次最终状态不受支持：$status"
         }
         batchStatus(batchId)
-        return finishRunningBatchInternal(batchId, status, updatedAtMillis) == 1
+        return finishRunningBatchInternal(
+            batchId,
+            executionGeneration,
+            status,
+            updatedAtMillis,
+        ) == 1
     }
 
     @Query(
@@ -856,9 +901,17 @@ data class BatchAnalysisCounts(
     val cancelled: Int,
 )
 
-/** 批次控制态及其无迁移的乐观锁修订号。 */
+/** 批次控制态及绑定 WorkRequest 生命周期的执行代际。 */
 data class BatchControlState(
     val status: String,
-    @ColumnInfo(name = "updated_at_millis")
-    val updatedAtMillis: Long,
+    @ColumnInfo(name = "execution_generation")
+    val executionGeneration: Long,
+)
+
+/** 启动恢复对账所需的批次执行所有权。 */
+data class BatchExecutionRecord(
+    @ColumnInfo(name = "batch_id")
+    val batchId: Long,
+    @ColumnInfo(name = "execution_generation")
+    val executionGeneration: Long,
 )

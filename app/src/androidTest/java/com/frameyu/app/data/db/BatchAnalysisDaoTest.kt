@@ -272,6 +272,7 @@ class BatchAnalysisDaoTest {
             dao.resumeBatch(pausedBatchId, "恢复中断", updatedAtMillis = 12L)
             dao.resumeBatch(pausedBatchId, "恢复中断", updatedAtMillis = 13L)
             assertEquals("QUEUED", dao.batchStatus(pausedBatchId))
+            assertEquals(2L, dao.batchControlState(pausedBatchId).executionGeneration)
 
             val cancelledBatchId = dao.createBatch(
                 batch = batch().copy(status = "QUEUED"),
@@ -279,6 +280,7 @@ class BatchAnalysisDaoTest {
             )
             dao.cancelBatch(cancelledBatchId, updatedAtMillis = 20L)
             dao.cancelBatch(cancelledBatchId, updatedAtMillis = 21L)
+            assertEquals(1L, dao.batchControlState(cancelledBatchId).executionGeneration)
             assertIllegalState {
                 dao.resumeBatch(cancelledBatchId, "不得复活", updatedAtMillis = 22L)
             }
@@ -299,6 +301,7 @@ class BatchAnalysisDaoTest {
             )
             dao.retryFailures(attentionBatchId, updatedAtMillis = 40L)
             assertEquals("QUEUED", dao.batchStatus(attentionBatchId))
+            assertEquals(1L, dao.batchControlState(attentionBatchId).executionGeneration)
             assertEquals(
                 listOf(44L),
                 dao.nextRunnableItems(attentionBatchId, limit = 10).map { it.id },
@@ -330,6 +333,7 @@ class BatchAnalysisDaoTest {
             assertTrue(
                 dao.failActiveExecution(
                     mixedBatchId,
+                    executionGeneration = 0L,
                     message = "Runner 级失败",
                     updatedAtMillis = 45L,
                 ),
@@ -373,8 +377,16 @@ class BatchAnalysisDaoTest {
                 items = listOf(workItem(88L, 1L, "QUALITY", status = "PENDING")),
             )
             assertTrue(
+                dao.markBatchRunning(
+                    queuedBatchId,
+                    executionGeneration = 0L,
+                    updatedAtMillis = 45L,
+                ),
+            )
+            assertTrue(
                 dao.failActiveExecution(
                     queuedBatchId,
+                    executionGeneration = 0L,
                     message = "首次前台任务启动失败",
                     updatedAtMillis = 46L,
                 ),
@@ -396,6 +408,7 @@ class BatchAnalysisDaoTest {
             assertTrue(
                 dao.failActiveExecution(
                     completedOnlyBatchId,
+                    executionGeneration = 0L,
                     message = "最终收尾失败",
                     updatedAtMillis = 46L,
                 ),
@@ -427,7 +440,14 @@ class BatchAnalysisDaoTest {
                 batch = batch().copy(status = "QUEUED"),
                 items = listOf(workItem(89L, 1L, "QUALITY")),
             )
-            assertTrue(dao.markBatchRunning(batchId, updatedAtMillis = 60L))
+            val oldGeneration = dao.batchControlState(batchId).executionGeneration
+            assertTrue(
+                dao.markBatchRunning(
+                    batchId,
+                    executionGeneration = oldGeneration,
+                    updatedAtMillis = 60L,
+                ),
+            )
 
             dao.pauseBatch(batchId, updatedAtMillis = 61L)
             dao.resumeBatch(batchId, "恢复新 attempt", updatedAtMillis = 62L)
@@ -435,16 +455,41 @@ class BatchAnalysisDaoTest {
             assertFalse(
                 dao.failActiveExecution(
                     batchId,
+                    executionGeneration = oldGeneration,
                     message = "旧 Worker 前台化失败",
                     updatedAtMillis = 63L,
                 ),
             )
             assertEquals("QUEUED", dao.batchStatus(batchId))
 
-            assertTrue(dao.markBatchRunning(batchId, updatedAtMillis = 64L))
+            val newGeneration = dao.batchControlState(batchId).executionGeneration
+            assertTrue(newGeneration > oldGeneration)
+            assertTrue(
+                dao.markBatchRunning(
+                    batchId,
+                    executionGeneration = newGeneration,
+                    updatedAtMillis = 64L,
+                ),
+            )
+            assertFalse(
+                dao.finishBatch(
+                    batchId,
+                    executionGeneration = oldGeneration,
+                    status = "COMPLETED",
+                    updatedAtMillis = 64L,
+                ),
+            )
+            assertEquals("RUNNING", dao.batchStatus(batchId))
             assertTrue(dao.markRunning(89L, updatedAtMillis = 65L))
             assertTrue(dao.completeItem(89L, updatedAtMillis = 66L))
-            assertTrue(dao.finishBatch(batchId, "COMPLETED", updatedAtMillis = 67L))
+            assertTrue(
+                dao.finishBatch(
+                    batchId,
+                    executionGeneration = newGeneration,
+                    status = "COMPLETED",
+                    updatedAtMillis = 67L,
+                ),
+            )
             assertEquals("COMPLETED", dao.batchStatus(batchId))
         } finally {
             database.close()
@@ -452,7 +497,7 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
-    fun staleClaimCannotCrossPauseAndResumeRevision() = runBlocking {
+    fun staleGenerationCannotClaimAfterPauseAndResume() = runBlocking {
         val database = createDatabase()
         try {
             database.mediaAssetDao().upsertAll(listOf(media(1L)))
@@ -469,19 +514,28 @@ class BatchAnalysisDaoTest {
             assertFalse(
                 dao.markBatchRunning(
                     batchId = batchId,
+                    executionGeneration = staleControl.executionGeneration,
                     updatedAtMillis = 1L,
-                    expectedRevision = staleControl.updatedAtMillis,
                 ),
             )
             assertEquals("QUEUED", dao.batchStatus(batchId))
 
             val currentControl = dao.batchControlState(batchId)
-            assertTrue(currentControl.updatedAtMillis > staleControl.updatedAtMillis)
+            assertTrue(
+                currentControl.executionGeneration > staleControl.executionGeneration,
+            )
             assertTrue(
                 dao.markBatchRunning(
                     batchId = batchId,
+                    executionGeneration = currentControl.executionGeneration,
                     updatedAtMillis = 1L,
-                    expectedRevision = currentControl.updatedAtMillis,
+                ),
+            )
+            assertTrue(
+                dao.markBatchRunning(
+                    batchId = batchId,
+                    executionGeneration = currentControl.executionGeneration,
+                    updatedAtMillis = 2L,
                 ),
             )
             assertEquals("RUNNING", dao.batchStatus(batchId))
@@ -518,13 +572,16 @@ class BatchAnalysisDaoTest {
 
             assertEquals(
                 listOf(queuedBatchId, emptyQueuedBatchId, completedItemsRunningBatchId),
-                dao.reconcilableBatchIds(),
+                dao.reconcilableExecutions().map { execution -> execution.batchId },
             )
 
-            dao.markBatchNeedsAttention(
-                queuedBatchId,
-                message = "WorkManager 入队失败",
-                updatedAtMillis = 50L,
+            assertTrue(
+                dao.markBatchNeedsAttention(
+                    queuedBatchId,
+                    executionGeneration = 0L,
+                    message = "WorkManager 入队失败",
+                    updatedAtMillis = 50L,
+                ),
             )
 
             assertEquals("NEEDS_ATTENTION", dao.batchStatus(queuedBatchId))
@@ -543,7 +600,35 @@ class BatchAnalysisDaoTest {
                 expectedAttempts = 0,
                 expectedNextTimestampMillis = 0L,
             )
-            assertTrue(completedBatchId !in dao.reconcilableBatchIds())
+            assertTrue(
+                completedBatchId !in
+                    dao.reconcilableExecutions().map { execution -> execution.batchId },
+            )
+
+            val staleFailureBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(50L, 2L, "QUALITY")),
+            )
+            val staleFailureGeneration =
+                dao.batchControlState(staleFailureBatchId).executionGeneration
+            dao.pauseBatch(staleFailureBatchId, updatedAtMillis = 51L)
+            dao.resumeBatch(staleFailureBatchId, "恢复新控制代", updatedAtMillis = 52L)
+            assertFalse(
+                dao.markBatchNeedsAttention(
+                    staleFailureBatchId,
+                    executionGeneration = staleFailureGeneration,
+                    message = "旧 generation 入队失败",
+                    updatedAtMillis = 53L,
+                ),
+            )
+            assertEquals("QUEUED", dao.batchStatus(staleFailureBatchId))
+            assertWorkItem(
+                database,
+                itemId = 50L,
+                expectedStatus = "PENDING",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
         } finally {
             database.close()
         }
@@ -689,9 +774,9 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
-    fun migration3To4PreservesOldDataAndCreatesBatchTables() = runBlocking {
+    fun migration3To5PreservesOldDataAndAddsExecutionGeneration() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val databaseName = "batch-analysis-migration-3-4.db"
+        val databaseName = "batch-analysis-migration-3-5.db"
         context.deleteDatabase(databaseName)
         var roomDatabase: FrameYuDatabase? = null
         try {
@@ -780,7 +865,10 @@ class BatchAnalysisDaoTest {
             }
 
             val migratedDatabase = Room.databaseBuilder(context, FrameYuDatabase::class.java, databaseName)
-                .addMigrations(FrameYuDatabase.MIGRATION_3_4)
+                .addMigrations(
+                    FrameYuDatabase.MIGRATION_3_4,
+                    FrameYuDatabase.MIGRATION_4_5,
+                )
                 .build()
             roomDatabase = migratedDatabase
             assertEquals("content://media/99", migratedDatabase.mediaAssetDao().getById(99L)?.uri)
@@ -789,6 +877,19 @@ class BatchAnalysisDaoTest {
                 0L,
                 migratedDatabase.batchAnalysisDao().observeBatch(batchId).first().totalWorkItems,
             )
+            migratedDatabase.openHelper.readableDatabase
+                .query("PRAGMA table_info(analysis_batches)")
+                .use { cursor ->
+                    val nameIndex = cursor.getColumnIndexOrThrow("name")
+                    val defaultIndex = cursor.getColumnIndexOrThrow("dflt_value")
+                    var generationDefault: String? = null
+                    while (cursor.moveToNext()) {
+                        if (cursor.getString(nameIndex) == "execution_generation") {
+                            generationDefault = cursor.getString(defaultIndex)
+                        }
+                    }
+                    assertEquals("0", generationDefault)
+                }
         } finally {
             roomDatabase?.close()
             context.deleteDatabase(databaseName)

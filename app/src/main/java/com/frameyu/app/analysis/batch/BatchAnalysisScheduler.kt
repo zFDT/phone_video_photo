@@ -14,6 +14,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 private const val BATCH_TAG_PREFIX = "frameyu-batch:"
+private const val BATCH_EXECUTION_TAG_PREFIX = "frameyu-batch-execution:"
 
 /**
  * 把所有批次追加到同一个唯一串行链。
@@ -27,8 +28,9 @@ class BatchAnalysisScheduler internal constructor(
 ) {
     suspend fun enqueue(batchId: Long): UUID {
         requireBatchId(batchId)
-        val request = requestFor(batchId)
         val outcome = withContext(NonCancellable) {
+            val execution = store.batchExecutionKey(batchId)
+            val request = requestFor(execution)
             try {
                 workManager.enqueueUniqueWork(
                     BatchAnalysisWorker.UNIQUE_WORK_NAME,
@@ -40,7 +42,11 @@ class BatchAnalysisScheduler internal constructor(
                 EnqueueOutcome.Failure(cancelled)
             } catch (error: Exception) {
                 try {
-                    store.markBatchNeedsAttention(batchId, ENQUEUE_FAILURE_MESSAGE)
+                    store.markBatchNeedsAttention(
+                        batchId = batchId,
+                        executionGeneration = execution.executionGeneration,
+                        message = ENQUEUE_FAILURE_MESSAGE,
+                    )
                 } catch (cancelled: CancellationException) {
                     return@withContext EnqueueOutcome.Failure(cancelled)
                 } catch (persistenceError: Exception) {
@@ -78,19 +84,19 @@ class BatchAnalysisScheduler internal constructor(
     }
 
     suspend fun reconcilePendingBatches(): BatchReconciliationResult {
-        val activeBatchIds = workManager.activeBatchIds()
+        val activeExecutions = workManager.activeExecutions()
         val enqueued = linkedMapOf<Long, UUID>()
         val failures = linkedMapOf<Long, Exception>()
-        store.reconcilableBatchIds()
+        store.reconcilableExecutions()
             .distinct()
-            .filterNot(activeBatchIds::contains)
-            .forEach { batchId ->
+            .filterNot(activeExecutions::contains)
+            .forEach { execution ->
                 try {
-                    enqueued[batchId] = enqueue(batchId)
+                    enqueued[execution.batchId] = enqueue(execution.batchId)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    failures[batchId] = error
+                    failures[execution.batchId] = error
                 }
             }
         return BatchReconciliationResult(
@@ -104,10 +110,20 @@ class BatchAnalysisScheduler internal constructor(
         val failures: Map<Long, Exception>,
     )
 
-    private fun requestFor(batchId: Long): OneTimeWorkRequest =
+    private fun requestFor(execution: BatchExecutionKey): OneTimeWorkRequest =
         OneTimeWorkRequestBuilder<BatchAnalysisWorker>()
-            .setInputData(workDataOf(BatchAnalysisWorker.KEY_BATCH_ID to batchId))
-            .addTag("$BATCH_TAG_PREFIX$batchId")
+            .setInputData(
+                workDataOf(
+                    BatchAnalysisWorker.KEY_BATCH_ID to execution.batchId,
+                    BatchAnalysisWorker.KEY_EXECUTION_GENERATION to
+                        execution.executionGeneration,
+                ),
+            )
+            .addTag("$BATCH_TAG_PREFIX${execution.batchId}")
+            .addTag(
+                "$BATCH_EXECUTION_TAG_PREFIX${execution.batchId}:" +
+                    execution.executionGeneration,
+            )
             .build()
 
     private fun requireBatchId(batchId: Long) {
@@ -142,7 +158,7 @@ internal interface BatchSchedulerWorkManager {
         request: OneTimeWorkRequest,
     )
 
-    suspend fun activeBatchIds(): Set<Long>
+    suspend fun activeExecutions(): Set<BatchExecutionKey>
 }
 
 private class WorkManagerBatchSchedulerWorkManager(
@@ -160,17 +176,26 @@ private class WorkManagerBatchSchedulerWorkManager(
         }
     }
 
-    override suspend fun activeBatchIds(): Set<Long> = withContext(Dispatchers.IO) {
+    override suspend fun activeExecutions(): Set<BatchExecutionKey> = withContext(Dispatchers.IO) {
         workManager.getWorkInfosForUniqueWork(BatchAnalysisWorker.UNIQUE_WORK_NAME)
             .get()
             .asSequence()
             .filter { workInfo -> !workInfo.state.isFinished }
-            .mapNotNull(WorkInfo::batchId)
+            .mapNotNull(WorkInfo::batchExecution)
             .toSet()
     }
 }
 
-private fun WorkInfo.batchId(): Long? = tags.asSequence()
-    .filter { tag -> tag.startsWith(BATCH_TAG_PREFIX) }
-    .map { tag -> tag.removePrefix(BATCH_TAG_PREFIX).toLongOrNull() }
-    .firstOrNull { batchId -> batchId != null && batchId > 0L }
+private fun WorkInfo.batchExecution(): BatchExecutionKey? = tags.asSequence()
+    .filter { tag -> tag.startsWith(BATCH_EXECUTION_TAG_PREFIX) }
+    .mapNotNull { tag ->
+        val values = tag.removePrefix(BATCH_EXECUTION_TAG_PREFIX).split(':', limit = 2)
+        val batchId = values.getOrNull(0)?.toLongOrNull()
+        val generation = values.getOrNull(1)?.toLongOrNull()
+        if (batchId != null && batchId > 0L && generation != null && generation >= 0L) {
+            BatchExecutionKey(batchId, generation)
+        } else {
+            null
+        }
+    }
+    .firstOrNull()

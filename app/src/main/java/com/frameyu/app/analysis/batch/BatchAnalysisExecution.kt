@@ -35,11 +35,13 @@ internal fun interface BatchExecutionLogger {
 internal class BatchAnalysisExecution(
     private val runBatch: suspend (
         batchId: Long,
+        executionGeneration: Long,
         onProgress: suspend (BatchAnalysisProgress) -> Unit,
-        afterClaim: suspend () -> Unit,
+        onClaimed: suspend () -> Unit,
     ) -> BatchAnalysisResult,
     private val failActiveExecution: suspend (
         batchId: Long,
+        executionGeneration: Long,
         message: String,
     ) -> BatchAnalysisResult,
     private val logger: BatchExecutionLogger,
@@ -47,30 +49,34 @@ internal class BatchAnalysisExecution(
     suspend fun execute(
         batchId: Long,
         runAttemptCount: Int,
-        beforeRun: suspend () -> Unit = {},
+        executionGeneration: Long = 0L,
+        onClaimed: suspend () -> Unit = {},
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
     ): BatchExecutionOutcome {
         return try {
-            BatchExecutionOutcome.Success(runBatch(batchId, onProgress, beforeRun))
+            BatchExecutionOutcome.Success(
+                runBatch(batchId, executionGeneration, onProgress, onClaimed),
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             if (error.hasIOExceptionCause() && runAttemptCount < MAX_RETRY_ATTEMPT_COUNT) {
                 BatchExecutionOutcome.Retry
             } else {
-                releaseChain(batchId, runAttemptCount, error)
+                releaseChain(batchId, executionGeneration, runAttemptCount, error)
             }
         }
     }
 
     private suspend fun releaseChain(
         batchId: Long,
+        executionGeneration: Long,
         runAttemptCount: Int,
         error: Exception,
     ): BatchExecutionOutcome.Success {
         val message = error.message ?: "批量分析执行失败"
         return try {
-            val result = failActiveExecution(batchId, message)
+            val result = failActiveExecution(batchId, executionGeneration, message)
             logger.log(batchId, runAttemptCount, error, null)
             BatchExecutionOutcome.Success(result, message)
         } catch (cancelled: CancellationException) {
