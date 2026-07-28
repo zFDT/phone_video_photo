@@ -79,6 +79,10 @@ data class AnalysisCandidateEntity(
     val isSelected: Boolean,
     @ColumnInfo(name = "is_cover")
     val isCover: Boolean = false,
+    @ColumnInfo(name = "model_status", defaultValue = "'PENDING'")
+    val modelStatus: String = "PENDING",
+    @ColumnInfo(name = "model_error_message")
+    val modelErrorMessage: String? = null,
 )
 
 /** 分析任务表，状态使用字符串保存以避免 Room 类型转换依赖。 */
@@ -193,7 +197,7 @@ interface AnalysisTaskDao {
         MediaFeatureReferenceEntity::class,
         MediaQualityResultEntity::class,
     ],
-    version = 5
+    version = 6
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -400,6 +404,19 @@ abstract class FrameYuDatabase : RoomDatabase() {
                     SET execution_generation = 1
                     WHERE status IN ('QUEUED', 'RUNNING')
                     """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE analysis_candidates " +
+                        "ADD COLUMN model_status TEXT NOT NULL DEFAULT 'PENDING'"
+                )
+                db.execSQL(
+                    "ALTER TABLE analysis_candidates " +
+                        "ADD COLUMN model_error_message TEXT"
                 )
             }
         }

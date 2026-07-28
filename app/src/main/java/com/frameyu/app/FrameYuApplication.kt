@@ -23,6 +23,7 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.media.MediaStoreRepository
 import com.frameyu.app.data.media.MediaStoreScanner
 import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
+import com.frameyu.app.sampling.RoomVideoFrameModelStore
 import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
 import com.frameyu.app.sampling.VideoAnalysisWorker
 import com.frameyu.app.sampling.VideoAnalysisWorkerFactory
@@ -31,6 +32,8 @@ import com.frameyu.app.settings.SettingsStore
 import com.frameyu.app.storage.FeatureCache
 import com.frameyu.app.system.AndroidThermalStatusProvider
 import com.frameyu.app.vision.MediaImageDecoder
+import com.frameyu.app.vision.DefaultFrameModelAnalyzer
+import com.frameyu.app.vision.FrameModelAnalyzer
 import com.frameyu.app.vision.MediaPipeImageClassifierAnalyzer
 import com.frameyu.app.vision.MediaPipeImageEmbeddingAnalyzer
 import com.frameyu.app.vision.MediaPipeObjectDetectorAnalyzer
@@ -97,6 +100,27 @@ class FrameYuApplication : Application(), Configuration.Provider {
         MediaPipeObjectDetectorAnalyzer(this, detectorModel.assetPath())
     }
 
+    private val frameModelAnalyzer: FrameModelAnalyzer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        DefaultFrameModelAnalyzer(
+            classifier = imageClassifierAnalyzer,
+            embedder = imageEmbeddingAnalyzer,
+            detector = objectDetectorAnalyzer,
+        )
+    }
+
+    private val videoFrameModelStore: RoomVideoFrameModelStore by lazy(
+        LazyThreadSafetyMode.SYNCHRONIZED,
+    ) {
+        RoomVideoFrameModelStore(
+            candidateDao = database.analysisCandidateDao(),
+            batchAnalysisDao = database.batchAnalysisDao(),
+            featureCache = FeatureCache(filesDir),
+            classificationModelSha256 = classifierModel.sha256,
+            embeddingModelSha256 = embedderModel.sha256,
+            detectionModelSha256 = detectorModel.sha256,
+        )
+    }
+
     private val imageAnalysisCoordinator: ImageAnalysisCoordinator by lazy(
         LazyThreadSafetyMode.SYNCHRONIZED,
         ::createImageAnalysisCoordinator,
@@ -140,12 +164,15 @@ class FrameYuApplication : Application(), Configuration.Provider {
                 FrameYuDatabase.MIGRATION_2_3,
                 FrameYuDatabase.MIGRATION_3_4,
                 FrameYuDatabase.MIGRATION_4_5,
+                FrameYuDatabase.MIGRATION_5_6,
             )
             .build()
         val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
         videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(
             context = this,
             database = database,
+            frameModelAnalyzerProvider = { frameModelAnalyzer },
+            frameModelStoreProvider = { videoFrameModelStore },
             concertModeEnabledProvider = { settingsStore.read().concertModeEnabled },
             thermalStatusProvider = AndroidThermalStatusProvider(this)::current,
         )

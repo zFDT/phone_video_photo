@@ -14,12 +14,15 @@ import com.frameyu.app.domain.model.AnalysisTask
 import com.frameyu.app.system.ThermalMonitor
 import com.frameyu.app.system.ThermalState
 import com.frameyu.app.system.ThermalStatus
+import com.frameyu.app.vision.FrameModelAnalyzer
 import kotlinx.coroutines.delay
 
-/** 使用 Room 媒体索引和本地规则评分执行视频分析。 */
+/** 使用 Room 媒体索引、规则评分和本地模型执行视频分析。 */
 class RoomVideoAnalysisWorkerRunner(
     private val context: Context,
     private val database: FrameYuDatabase,
+    private val frameModelAnalyzerProvider: () -> FrameModelAnalyzer,
+    private val frameModelStoreProvider: () -> RoomVideoFrameModelStore,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val concertModeEnabledProvider: () -> Boolean = { false },
     private val thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
@@ -67,6 +70,16 @@ class RoomVideoAnalysisWorkerRunner(
         )
 
         return try {
+            val frameModelStore = frameModelStoreProvider()
+            val frameModelOrchestrator = VideoFrameModelOrchestrator(
+                analyzerProvider = {
+                    val frameModelAnalyzer = frameModelAnalyzerProvider()
+                    VideoFrameModelOperation<Bitmap> { bitmap, timestampMillis, highValue ->
+                        frameModelAnalyzer.analyze(bitmap, timestampMillis, highValue)
+                    }
+                },
+                store = frameModelStore,
+            )
             retriever.setDataSource(context, Uri.parse(media.uri))
             val result = runner.run(
                 plan = plan,
@@ -91,8 +104,10 @@ class RoomVideoAnalysisWorkerRunner(
                             },
                         )
                         val score = analyzer.analyze(sample, FrameAnalysisContext(previousSample))
-                        database.analysisCandidateDao().upsertAll(
-                            listOf(AnalysisCandidateMapper.toEntity(media.id, score)),
+                        frameModelOrchestrator.process(
+                            mediaId = media.id,
+                            candidate = AnalysisCandidateMapper.toEntity(media.id, score),
+                            frame = analysisBitmap,
                         )
                         previousSample = sample
                     } finally {
@@ -101,6 +116,13 @@ class RoomVideoAnalysisWorkerRunner(
                 } finally {
                     bitmap.recycle()
                 }
+            }
+            if (result is VideoAnalysisTaskResult.Completed) {
+                VideoClassificationAggregationCoordinator(frameModelStore).rebuildAndSave(
+                    mediaId = media.id,
+                    modelSha256 = frameModelStore.classificationSha256,
+                    plannedTimestampsMillis = plan.sampleTimestamps(),
+                )
             }
             val status = when (result) {
                 is VideoAnalysisTaskResult.Completed -> AnalysisTask.Status.COMPLETED
@@ -124,7 +146,7 @@ class RoomVideoAnalysisWorkerRunner(
         }
     }
 
-    /** 温控暂停期间等待设备恢复；临界温度交给任务核心转为可恢复取消结果。 */
+    /** 温控暂停期间等待设备恢复；临界温度保留协程取消语义并向 Worker 传播。 */
     private suspend fun awaitThermalWindow() {
         val monitor = ThermalMonitor()
         while (true) {

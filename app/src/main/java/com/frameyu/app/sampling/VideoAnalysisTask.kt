@@ -57,8 +57,8 @@ class VideoAnalysisTask(
             }
             VideoAnalysisTaskResult.Completed(VideoAnalysisProgress(planId, plan.ranges.size, plan.videoDurationMillis, sampledCount, totalSampleCount))
         } catch (cancelled: CancellationException) {
-            VideoAnalysisTaskResult.Cancelled(VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount))
-        } catch (error: Throwable) {
+            throw cancelled
+        } catch (error: Exception) {
             VideoAnalysisTaskResult.Failed(VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount), error)
         }
     }

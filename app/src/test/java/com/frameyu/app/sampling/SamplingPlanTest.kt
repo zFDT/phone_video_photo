@@ -95,9 +95,19 @@ class SamplingPlanTest {
     }
 
     @Test
-    fun `规划器支持最长两小时但拒绝更长视频`() {
+    fun `规划器支持最长六小时且采样数量保持有界`() {
         val plan = SamplingPlan.create(videoDurationMillis = SamplingPlan.MAX_VIDEO_DURATION_MILLIS)
+
+        assertEquals(6 * 60 * 60 * 1_000L, SamplingPlan.MAX_VIDEO_DURATION_MILLIS)
         assertEquals(SamplingPlan.MAX_VIDEO_DURATION_MILLIS, plan.ranges.single().endMillis)
+        assertEquals(6 * 60 * 60, plan.sampleTimestamps().size)
+        assertEquals(
+            2 * 6 * 60 * 60,
+            SamplingPlan.create(
+                videoDurationMillis = SamplingPlan.MAX_VIDEO_DURATION_MILLIS,
+                coarseFramesPerSecond = 2.0,
+            ).sampleTimestamps().size,
+        )
 
         assertThrows(IllegalArgumentException::class.java) {
             SamplingPlan.create(videoDurationMillis = SamplingPlan.MAX_VIDEO_DURATION_MILLIS + 1L)

@@ -36,6 +36,18 @@ class FeatureCache internal constructor(
         return File(File(File(filesDir, FEATURES_DIRECTORY), normalizedSha), "$mediaId.f32")
     }
 
+    /** 视频帧按媒体和时间戳隔离；时间戳 0 保持已有图片缓存路径兼容。 */
+    fun fileFor(modelSha256: String, mediaId: Long, timestampMillis: Long): File {
+        require(timestampMillis >= 0L) { "特征时间戳不能为负数" }
+        if (timestampMillis == IMAGE_TIMESTAMP_MILLIS) return fileFor(modelSha256, mediaId)
+        val normalizedSha = normalizeModelSha(modelSha256)
+        require(mediaId > 0L) { "媒体 ID 必须大于 0" }
+        return File(
+            File(File(File(filesDir, FEATURES_DIRECTORY), normalizedSha), mediaId.toString()),
+            "$timestampMillis.f32",
+        )
+    }
+
     /**
      * 损坏、截断或包含非有限数值的缓存统一视为未命中。
      * 参数非法仍抛出 IllegalArgumentException，避免把调用方错误伪装成缓存缺失。
@@ -47,17 +59,36 @@ class FeatureCache internal constructor(
         }
     }
 
+    fun read(modelSha256: String, mediaId: Long, timestampMillis: Long): FloatArray? {
+        val file = fileFor(modelSha256, mediaId, timestampMillis)
+        return synchronized(lockFor(file)) {
+            readValidated(file)
+        }
+    }
+
     /**
      * 同一路径的进程内并发写入会串行化，最后完成的写入覆盖旧值。
      * 仅当临时文件完整落盘并成功重命名后才返回最终文件。
      */
     fun write(modelSha256: String, mediaId: Long, vector: FloatArray): File {
+        return writeTo(fileFor(modelSha256, mediaId), vector)
+    }
+
+    fun write(
+        modelSha256: String,
+        mediaId: Long,
+        timestampMillis: Long,
+        vector: FloatArray,
+    ): File {
+        return writeTo(fileFor(modelSha256, mediaId, timestampMillis), vector)
+    }
+
+    private fun writeTo(finalFile: File, vector: FloatArray): File {
         require(vector.isNotEmpty()) { "特征向量不能为空" }
         require(vector.size <= MAX_VECTOR_DIMENSION) {
             "特征向量维度不能超过 $MAX_VECTOR_DIMENSION"
         }
         require(vector.all(Float::isFinite)) { "特征向量必须只包含有限数值" }
-        val finalFile = fileFor(modelSha256, mediaId)
 
         return synchronized(lockFor(finalFile)) {
             writeAtomically(finalFile, vector)
@@ -151,6 +182,7 @@ class FeatureCache internal constructor(
         internal const val MAX_VECTOR_DIMENSION = 65_536
         private const val STRIPED_LOCK_COUNT = 64
         private const val FEATURES_DIRECTORY = "features"
+        private const val IMAGE_TIMESTAMP_MILLIS = 0L
         private const val MIN_FILE_SIZE_BYTES = Int.SIZE_BYTES + Float.SIZE_BYTES
         private const val READ_CHUNK_BYTES = 8 * 1_024
         private val MODEL_SHA_PATTERN = Regex("[0-9A-Fa-f]{64}")

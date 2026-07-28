@@ -54,6 +54,22 @@ class FeatureCacheTest {
     }
 
     @Test
+    fun `视频向量按媒体和时间戳隔离且时间零兼容图片路径`() {
+        val cache = FeatureCache(temporaryFolder.root)
+        val modelSha = "9".repeat(64)
+
+        val imageCompatibleFile = cache.write(modelSha, 42L, 0L, floatArrayOf(0f))
+        val firstVideoFile = cache.write(modelSha, 42L, 1_000L, floatArrayOf(1f))
+        val secondVideoFile = cache.write(modelSha, 42L, 2_000L, floatArrayOf(2f))
+
+        assertEquals(cache.fileFor(modelSha, 42L), imageCompatibleFile)
+        assertArrayEquals(floatArrayOf(0f), cache.read(modelSha, 42L), 0f)
+        assertArrayEquals(floatArrayOf(1f), cache.read(modelSha, 42L, 1_000L), 0f)
+        assertArrayEquals(floatArrayOf(2f), cache.read(modelSha, 42L, 2_000L), 0f)
+        assertTrue(firstVideoFile != secondVideoFile)
+    }
+
+    @Test
     fun `覆盖提交失败时旧缓存仍可读且临时文件被清理`() {
         val modelSha = "3".repeat(64)
         val normalCache = FeatureCache(temporaryFolder.root)

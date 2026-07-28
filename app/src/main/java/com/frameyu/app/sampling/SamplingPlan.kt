@@ -11,7 +11,7 @@ class SamplingPlan private constructor(
 
     fun sampleTimestamps(): List<Long> = ranges.flatMap { range ->
         val stepMillis = 1_000.0 / range.framesPerSecond
-        generateSequence(0) { it + 1 }
+        generateSequence(0L) { it + 1L }
             .map { range.startMillis + (it * stepMillis).toLong() }
             .takeWhile { it < range.endMillis }
             .toList()
@@ -32,7 +32,7 @@ class SamplingPlan private constructor(
     }
 
     companion object {
-        const val MAX_VIDEO_DURATION_MILLIS = 2 * 60 * 60 * 1_000L
+        const val MAX_VIDEO_DURATION_MILLIS = 6 * 60 * 60 * 1_000L
 
         fun create(
             videoDurationMillis: Long,
@@ -40,7 +40,7 @@ class SamplingPlan private constructor(
             coarseFramesPerSecond: Double = SamplingTier.COARSE.defaultFramesPerSecond,
         ): SamplingPlan {
             require(videoDurationMillis > 0L && videoDurationMillis <= MAX_VIDEO_DURATION_MILLIS) {
-                "视频时长必须在 1 毫秒到 2 小时之间"
+                "视频时长必须在 1 毫秒到 6 小时之间"
             }
             require(coarseFramesPerSecond in SamplingTier.COARSE.minFramesPerSecond..SamplingTier.COARSE.maxFramesPerSecond) {
                 "粗采样帧率必须在 ${SamplingTier.COARSE.minFramesPerSecond}～${SamplingTier.COARSE.maxFramesPerSecond} 帧/秒之间"

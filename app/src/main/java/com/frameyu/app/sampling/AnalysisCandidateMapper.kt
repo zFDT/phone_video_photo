@@ -14,10 +14,12 @@ object AnalysisCandidateMapper {
         sharpnessScore = score.clarityScore,
         subjectScore = 0,
         expressionScore = 0,
-        compositionScore = score.exposureScore,
+        compositionScore = 0,
         sceneScore = score.sceneChangeScore,
         thumbnailPath = null,
         isSelected = false,
+        modelStatus = CandidateModelStatus.PENDING.name,
+        modelErrorMessage = null,
     )
 
     private fun stableId(mediaAssetId: Long, timestampMillis: Long): Long {

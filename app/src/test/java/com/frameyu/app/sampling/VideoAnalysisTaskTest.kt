@@ -1,5 +1,6 @@
 package com.frameyu.app.sampling
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -37,5 +38,38 @@ class VideoAnalysisTaskTest {
 
         assertTrue(result is VideoAnalysisTaskResult.Failed)
         assertEquals(1L, (result as VideoAnalysisTaskResult.Failed).progress.sampledFrameCount)
+    }
+
+    @Test
+    fun `协程取消和Error不会被转换为任务结果`() {
+        val cancellation = CancellationException("cancel")
+        val actualCancellation = assertThrows<CancellationException> {
+            runBlocking {
+                VideoAnalysisTask(SamplingCheckpointStore { }).run(SamplingPlan.create(1L)) {
+                    throw cancellation
+                }
+            }
+        }
+        assertTrue(actualCancellation === cancellation)
+
+        val fatal = AssertionError("fatal")
+        val actualError = assertThrows<AssertionError> {
+            runBlocking {
+                VideoAnalysisTask(SamplingCheckpointStore { }).run(SamplingPlan.create(1L)) {
+                    throw fatal
+                }
+            }
+        }
+        assertTrue(actualError === fatal)
+    }
+
+    private inline fun <reified T : Throwable> assertThrows(block: () -> Unit): T {
+        try {
+            block()
+        } catch (error: Throwable) {
+            assertTrue("预期 ${T::class.java.simpleName}，实际 ${error::class.java.simpleName}", error is T)
+            return error as T
+        }
+        throw AssertionError("预期抛出 ${T::class.java.simpleName}")
     }
 }

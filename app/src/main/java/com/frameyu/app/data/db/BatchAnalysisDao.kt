@@ -703,6 +703,21 @@ abstract class BatchAnalysisDao {
         modelSha256: String,
     ): List<MediaClassificationEntity>
 
+    /** 查询逐帧分类；明确排除视频级聚合 sentinel。 */
+    @Query(
+        """
+        SELECT * FROM media_classifications
+        WHERE media_asset_id = :mediaAssetId
+          AND model_sha256 = :modelSha256
+          AND timestamp_millis >= 0
+        ORDER BY timestamp_millis, rank
+        """
+    )
+    abstract suspend fun getFrameClassifications(
+        mediaAssetId: Long,
+        modelSha256: String,
+    ): List<MediaClassificationEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertDetections(results: List<MediaDetectionEntity>)
 
@@ -806,6 +821,20 @@ abstract class BatchAnalysisDao {
         timestampMillis: Long,
         modelSha256: String,
     ): MediaFeatureReferenceEntity?
+
+    @Query(
+        """
+        DELETE FROM media_feature_references
+        WHERE media_asset_id = :mediaAssetId
+          AND timestamp_millis = :timestampMillis
+          AND model_sha256 = :modelSha256
+        """
+    )
+    abstract suspend fun deleteFeatureReference(
+        mediaAssetId: Long,
+        timestampMillis: Long,
+        modelSha256: String,
+    )
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertQualityResult(result: MediaQualityResultEntity)

@@ -706,6 +706,39 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun frameClassificationQueryExcludesVideoAggregateSentinel() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val dao = database.batchAnalysisDao()
+            val modelSha256 = "model-sha"
+            listOf(-1L, 0L, 1_000L).forEach { timestampMillis ->
+                dao.upsertClassifications(
+                    mediaAssetId = 1L,
+                    timestampMillis = timestampMillis,
+                    modelSha256 = modelSha256,
+                    results = listOf(
+                        classification(
+                            mediaAssetId = 1L,
+                            timestampMillis = timestampMillis,
+                            modelSha256 = modelSha256,
+                            rank = 0,
+                            label = "label-$timestampMillis",
+                        ),
+                    ),
+                )
+            }
+
+            assertEquals(
+                listOf(0L, 1_000L),
+                dao.getFrameClassifications(1L, modelSha256).map { it.timestampMillis },
+            )
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun featureAndQualityUpsertsKeepStableRowIds() = runBlocking {
         val database = createDatabase()
         try {
@@ -884,6 +917,7 @@ class BatchAnalysisDaoTest {
                 .addMigrations(
                     seedActiveV4Batches,
                     FrameYuDatabase.MIGRATION_4_5,
+                    FrameYuDatabase.MIGRATION_5_6,
                 )
                 .build()
             roomDatabase = migratedDatabase

@@ -18,7 +18,11 @@ class AnalysisCandidateMapperTest {
         assertEquals(75, candidate.score)
         assertEquals(80, candidate.sharpnessScore)
         assertEquals(50, candidate.sceneScore)
+        assertEquals(0, candidate.subjectScore)
+        assertEquals(0, candidate.expressionScore)
+        assertEquals(0, candidate.compositionScore)
         assertEquals(false, candidate.isSelected)
+        assertEquals(CandidateModelStatus.PENDING.name, candidate.modelStatus)
     }
 
     @Test

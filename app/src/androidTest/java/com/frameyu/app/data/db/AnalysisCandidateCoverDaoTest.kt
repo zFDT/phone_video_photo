@@ -53,7 +53,44 @@ class AnalysisCandidateCoverDaoTest {
     }
 
     @Test
-    fun migration2To3AddsIsCoverWithFalseDefault() {
+    fun ruleCandidateAndModelStatusUpdatesPreserveUserFlags() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val original = candidate(11L, 1L, isCover = true).copy(
+                isSelected = true,
+                modelStatus = "COMPLETED",
+            )
+            database.analysisCandidateDao().upsertAll(listOf(original))
+
+            database.analysisCandidateDao().upsertRuleCandidate(
+                original.copy(
+                    score = 99,
+                    isSelected = false,
+                    isCover = false,
+                    modelStatus = "PENDING",
+                ),
+            )
+            database.analysisCandidateDao().updateModelStatus(
+                candidateId = original.id,
+                status = "RETRYABLE_FAILED",
+                errorMessage = "模型失败",
+            )
+
+            val updated = database.analysisCandidateDao().getByMediaAssetId(1L).single()
+            assertTrue(updated.isSelected)
+            assertTrue(updated.isCover)
+            assertTrue(updated.score == 99)
+            assertTrue(updated.modelStatus == "RETRYABLE_FAILED")
+            assertTrue(updated.modelErrorMessage == "模型失败")
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun migration2To6AddsCandidateCoverAndModelStateDefaults() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val databaseName = "analysis-candidate-cover-migration.db"
         context.deleteDatabase(databaseName)
@@ -74,20 +111,32 @@ class AnalysisCandidateCoverDaoTest {
                 FrameYuDatabase.MIGRATION_2_3,
                 FrameYuDatabase.MIGRATION_3_4,
                 FrameYuDatabase.MIGRATION_4_5,
+                FrameYuDatabase.MIGRATION_5_6,
             )
             .build()
         try {
             val columns = roomDatabase.openHelper.readableDatabase.query("PRAGMA table_info(analysis_candidates)")
             var foundCoverColumn = false
+            var foundModelStatusColumn = false
+            var foundModelErrorColumn = false
             columns.use {
                 while (it.moveToNext()) {
-                    if (it.getString(it.getColumnIndexOrThrow("name")) == "is_cover") {
-                        foundCoverColumn = true
-                        assertTrue(it.getString(it.getColumnIndexOrThrow("dflt_value")) == "0")
+                    when (it.getString(it.getColumnIndexOrThrow("name"))) {
+                        "is_cover" -> {
+                            foundCoverColumn = true
+                            assertTrue(it.getString(it.getColumnIndexOrThrow("dflt_value")) == "0")
+                        }
+                        "model_status" -> {
+                            foundModelStatusColumn = true
+                            assertTrue(it.getString(it.getColumnIndexOrThrow("dflt_value")) == "'PENDING'")
+                        }
+                        "model_error_message" -> foundModelErrorColumn = true
                     }
                 }
             }
             assertTrue(foundCoverColumn)
+            assertTrue(foundModelStatusColumn)
+            assertTrue(foundModelErrorColumn)
         } finally {
             roomDatabase.close()
             context.deleteDatabase(databaseName)
