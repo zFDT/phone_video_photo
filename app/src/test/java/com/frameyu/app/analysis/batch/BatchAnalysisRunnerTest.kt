@@ -1,5 +1,6 @@
 package com.frameyu.app.analysis.batch
 
+import android.database.sqlite.SQLiteException
 import com.frameyu.app.data.db.AnalysisWorkItemEntity
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
@@ -426,6 +427,63 @@ class BatchAnalysisRunnerTest {
         assertEquals(1, result.retryableFailed)
         assertEquals(0, result.permanentFailed)
         assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(1L))
+    }
+
+    @Test
+    fun `图片协调器将 SQLite cause chain 提升到 Runner 边界`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val roomError = IllegalStateException(
+            "Room 查询失败",
+            SQLiteException("数据库文件不可读"),
+        )
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = ImageBatchWorkItemCoordinator { throw roomError },
+        )
+
+        val thrown = runCatching { runner.run(BATCH_ID) }.exceptionOrNull()
+
+        assertTrue(thrown is BatchAnalysisInfrastructureException)
+        assertSame(roomError, thrown?.cause)
+        assertTrue(store.failedItemIds.isEmpty())
+        assertEquals(WorkItemStatus.RUNNING, store.status(1L))
+    }
+
+    @Test
+    fun `图片协调器保留包装 IOException 的可重试语义`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = ImageBatchWorkItemCoordinator {
+                throw IllegalArgumentException(
+                    "解码器包装了媒体读取失败",
+                    IOException("媒体读取失败"),
+                )
+            },
+        )
+
+        val result = runner.run(BATCH_ID)
+
+        assertEquals(1, result.retryableFailed)
+        assertEquals(0, result.permanentFailed)
+        assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(1L))
+    }
+
+    @Test
+    fun `普通模型或内容异常不会误判为基础设施失败`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = ImageBatchWorkItemCoordinator {
+                throw IllegalArgumentException("图片内容不符合模型输入")
+            },
+        )
+
+        val result = runner.run(BATCH_ID)
+
+        assertEquals(0, result.retryableFailed)
+        assertEquals(1, result.permanentFailed)
+        assertEquals(WorkItemStatus.PERMANENT_FAILED, store.status(1L))
     }
 
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
