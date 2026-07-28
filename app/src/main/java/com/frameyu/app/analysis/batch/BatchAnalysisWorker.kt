@@ -92,7 +92,7 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot
 
-    suspend fun finishBatch(batchId: Long, status: BatchFinalStatus)
+    suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean
 }
 
 fun interface BatchWorkItemCoordinator {
@@ -151,9 +151,8 @@ class RoomBatchAnalysisStore(
         )
     }
 
-    override suspend fun finishBatch(batchId: Long, status: BatchFinalStatus) {
+    override suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean =
         dao.finishBatch(batchId, status.name, nowMillis())
-    }
 
     override suspend fun pauseBatch(batchId: Long) {
         dao.pauseBatch(batchId, nowMillis())
@@ -295,7 +294,25 @@ class BatchAnalysisRunner(
         } else {
             BatchFinalStatus.COMPLETED
         }
-        store.finishBatch(batchId, finalStatus)
+        if (!store.finishBatch(batchId, finalStatus)) {
+            return when (store.controlState(batchId)) {
+                BatchControlState.PAUSED -> controlledResult(
+                    batchId,
+                    paused = true,
+                    currentStage = currentStage,
+                    currentMediaId = currentMediaId,
+                )
+                BatchControlState.CANCELLED -> controlledResult(
+                    batchId,
+                    cancelled = true,
+                    currentStage = currentStage,
+                    currentMediaId = currentMediaId,
+                )
+                BatchControlState.RUNNABLE -> error(
+                    "批次 id=$batchId 的最终状态条件写入失败，但控制态仍可运行",
+                )
+            }
+        }
         return snapshot.toResult(
             currentStage = currentStage,
             currentMediaId = currentMediaId,

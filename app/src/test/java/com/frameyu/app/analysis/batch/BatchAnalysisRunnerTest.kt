@@ -208,6 +208,40 @@ class BatchAnalysisRunnerTest {
         assertEquals(WorkItemStatus.COMPLETED, store.status(1L))
     }
 
+    @Test
+    fun `最终检查后发生暂停不会被完成状态覆盖`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+        store.beforeFinishBatch = { store.pauseBatch(BATCH_ID) }
+
+        val result = runner.run(BATCH_ID)
+
+        assertTrue(result.paused)
+        assertFalse(result.cancelled)
+        assertEquals(null, store.finalStatus)
+        assertEquals(WorkItemStatus.COMPLETED, store.status(1L))
+    }
+
+    @Test
+    fun `最终检查后发生取消不会被完成状态覆盖`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+        store.beforeFinishBatch = { store.cancelBatch(BATCH_ID) }
+
+        val result = runner.run(BATCH_ID)
+
+        assertTrue(result.cancelled)
+        assertFalse(result.paused)
+        assertEquals(null, store.finalStatus)
+        assertEquals(WorkItemStatus.COMPLETED, store.status(1L))
+    }
+
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
         ids.map { id -> item(id, WorkItemStatus.PENDING) }
 
@@ -243,6 +277,7 @@ private class FakeBatchAnalysisStore(
     val failedItemIds = mutableListOf<Long>()
     val completedItemIds = mutableListOf<Long>()
     val requestedCursors = mutableListOf<Long>()
+    var beforeFinishBatch: (suspend () -> Unit)? = null
 
     fun status(id: Long): WorkItemStatus = WorkItemStatus.valueOf(items.getValue(id).status)
 
@@ -334,9 +369,12 @@ private class FakeBatchAnalysisStore(
         )
     }
 
-    override suspend fun finishBatch(batchId: Long, status: BatchFinalStatus) {
+    override suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean {
         requireBatch(batchId)
+        beforeFinishBatch?.invoke()
+        if (controlState != BatchControlState.RUNNABLE) return false
         finalStatus = status
+        return true
     }
 
     override suspend fun pauseBatch(batchId: Long) {

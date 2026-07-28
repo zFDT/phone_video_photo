@@ -44,8 +44,11 @@ class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var videoAnalysisWorkScheduler: VideoAnalysisWorkScheduler
         private set
 
-    lateinit var batchAnalysisWorkScheduler: BatchAnalysisScheduler
-        private set
+    val batchAnalysisWorkScheduler: BatchAnalysisScheduler by lazy(
+        LazyThreadSafetyMode.SYNCHRONIZED,
+    ) {
+        BatchAnalysisScheduler.from(this, batchAnalysisStore)
+    }
 
     lateinit var mediaStoreRepository: MediaStoreRepository
         private set
@@ -108,7 +111,6 @@ class FrameYuApplication : Application(), Configuration.Provider {
             thermalStatusProvider = AndroidThermalStatusProvider(this)::current,
         )
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
-        batchAnalysisWorkScheduler = BatchAnalysisScheduler.from(this, batchAnalysisStore)
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
     }
 

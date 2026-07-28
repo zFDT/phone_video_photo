@@ -209,6 +209,21 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    @Query(
+        """
+        UPDATE analysis_batches
+        SET status = :status,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :batchId
+          AND status = 'RUNNING'
+        """
+    )
+    protected abstract suspend fun finishRunningBatchInternal(
+        batchId: Long,
+        status: String,
+        updatedAtMillis: Long,
+    ): Int
+
     @Transaction
     open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long) {
         val status = batchStatus(batchId)
@@ -364,16 +379,16 @@ abstract class BatchAnalysisDao {
     }
 
     @Transaction
-    open suspend fun finishBatch(batchId: Long, status: String, updatedAtMillis: Long) {
+    open suspend fun finishBatch(
+        batchId: Long,
+        status: String,
+        updatedAtMillis: Long,
+    ): Boolean {
         require(status in setOf("COMPLETED", "NEEDS_ATTENTION")) {
             "批次最终状态不受支持：$status"
         }
         batchStatus(batchId)
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, status, updatedAtMillis),
-            batchId,
-            "结束",
-        )
+        return finishRunningBatchInternal(batchId, status, updatedAtMillis) == 1
     }
 
     @Query(

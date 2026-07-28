@@ -4,14 +4,18 @@ import android.content.Context
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.UUID
 
 private const val BATCH_TAG_PREFIX = "frameyu-batch:"
 
-/** 把所有批次追加到同一个唯一串行链，并只精确取消目标批次。 */
+/**
+ * 把所有批次追加到同一个唯一串行链。
+ *
+ * WorkManager 会把节点取消传播给依赖它的后续 WorkRequest，因此暂停和取消只持久化控制态，
+ * 由运行中 Runner 在工作项边界协作式停止，排队 Worker 启动后也会读取控制态并正常退出。
+ */
 class BatchAnalysisScheduler internal constructor(
     private val workManager: BatchSchedulerWorkManager,
     private val store: BatchAnalysisLifecycleStore,
@@ -30,7 +34,6 @@ class BatchAnalysisScheduler internal constructor(
     suspend fun pause(batchId: Long) {
         requireBatchId(batchId)
         store.pauseBatch(batchId)
-        cancelActiveWork(batchId)
     }
 
     suspend fun resume(batchId: Long): UUID {
@@ -42,21 +45,12 @@ class BatchAnalysisScheduler internal constructor(
     suspend fun cancel(batchId: Long) {
         requireBatchId(batchId)
         store.cancelBatch(batchId)
-        cancelActiveWork(batchId)
     }
 
     suspend fun retryFailures(batchId: Long): UUID {
         requireBatchId(batchId)
         store.retryFailures(batchId)
         return enqueue(batchId)
-    }
-
-    private suspend fun cancelActiveWork(batchId: Long) {
-        workManager.getUniqueWork()
-            .filter { snapshot ->
-                snapshot.batchId == batchId && snapshot.state in ACTIVE_STATES
-            }
-            .forEach { snapshot -> workManager.cancelWorkById(snapshot.id) }
     }
 
     private fun requestFor(batchId: Long): OneTimeWorkRequest =
@@ -70,12 +64,6 @@ class BatchAnalysisScheduler internal constructor(
     }
 
     companion object {
-        private val ACTIVE_STATES = setOf(
-            WorkInfo.State.ENQUEUED,
-            WorkInfo.State.RUNNING,
-            WorkInfo.State.BLOCKED,
-        )
-
         fun from(
             context: Context,
             store: BatchAnalysisLifecycleStore,
@@ -88,24 +76,12 @@ class BatchAnalysisScheduler internal constructor(
     }
 }
 
-internal data class BatchScheduledWorkSnapshot(
-    val id: UUID,
-    val state: WorkInfo.State,
-    val batchId: Long,
-)
-
 internal interface BatchSchedulerWorkManager {
     fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
     )
-
-    suspend fun getUniqueWork(): List<BatchScheduledWorkSnapshot>
-
-    fun cancelWorkById(id: UUID)
-
-    fun cancelUniqueWork(uniqueWorkName: String)
 }
 
 private class WorkManagerBatchSchedulerWorkManager(
@@ -117,25 +93,5 @@ private class WorkManagerBatchSchedulerWorkManager(
         request: OneTimeWorkRequest,
     ) {
         workManager.enqueueUniqueWork(uniqueWorkName, existingWorkPolicy, request)
-    }
-
-    override suspend fun getUniqueWork(): List<BatchScheduledWorkSnapshot> =
-        workManager.getWorkInfosForUniqueWork(BatchAnalysisWorker.UNIQUE_WORK_NAME)
-            .get()
-            .mapNotNull { workInfo ->
-                val batchId = workInfo.tags
-                    .firstOrNull { tag -> tag.startsWith(BATCH_TAG_PREFIX) }
-                    ?.removePrefix(BATCH_TAG_PREFIX)
-                    ?.toLongOrNull()
-                    ?: return@mapNotNull null
-                BatchScheduledWorkSnapshot(workInfo.id, workInfo.state, batchId)
-            }
-
-    override fun cancelWorkById(id: UUID) {
-        workManager.cancelWorkById(id)
-    }
-
-    override fun cancelUniqueWork(uniqueWorkName: String) {
-        workManager.cancelUniqueWork(uniqueWorkName)
     }
 }

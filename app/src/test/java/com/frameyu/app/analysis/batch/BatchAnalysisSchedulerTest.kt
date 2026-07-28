@@ -2,11 +2,9 @@ package com.frameyu.app.analysis.batch
 
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
-import androidx.work.WorkInfo
-import java.util.UUID
+import com.frameyu.app.FrameYuApplication
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -35,30 +33,27 @@ class BatchAnalysisSchedulerTest {
     }
 
     @Test
-    fun `pause 先持久化再精确取消对应 active work`() = runBlocking {
+    fun `pause 只持久化控制态且保留唯一链中所有 request`() = runBlocking {
         val events = mutableListOf<String>()
-        val firstId = UUID.randomUUID()
-        val otherId = UUID.randomUUID()
-        val finishedId = UUID.randomUUID()
-        val workManager = FakeBatchSchedulerWorkManager(
-            events = events,
-            snapshots = listOf(
-                BatchScheduledWorkSnapshot(firstId, WorkInfo.State.RUNNING, 1L),
-                BatchScheduledWorkSnapshot(otherId, WorkInfo.State.ENQUEUED, 2L),
-                BatchScheduledWorkSnapshot(finishedId, WorkInfo.State.SUCCEEDED, 1L),
-            ),
-        )
+        val workManager = FakeBatchSchedulerWorkManager(events = events)
         val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore(events))
+        scheduler.enqueue(1L)
+        scheduler.enqueue(2L)
 
         scheduler.pause(1L)
+        scheduler.enqueue(3L)
 
+        // WorkManager 会把单个依赖节点的取消传播给后续节点，因此暂停只能协作式停止。
         assertEquals(
-            listOf("store.pause:1", "work.list", "work.cancel:$firstId"),
+            listOf(
+                "work.enqueue:frameyu-batch-analysis:1",
+                "work.enqueue:frameyu-batch-analysis:2",
+                "store.pause:1",
+                "work.enqueue:frameyu-batch-analysis:3",
+            ),
             events,
         )
-        assertFalse(workManager.cancelledIds.contains(otherId))
-        assertFalse(workManager.cancelledIds.contains(finishedId))
-        assertTrue(workManager.cancelledUniqueNames.isEmpty())
+        assertEquals(listOf(1L, 2L, 3L), workManager.enqueued.map(EnqueuedBatchWork::batchId))
     }
 
     @Test
@@ -78,27 +73,27 @@ class BatchAnalysisSchedulerTest {
     }
 
     @Test
-    fun `cancel 先持久化且不取消其他批次`() = runBlocking {
+    fun `cancel 只持久化控制态且后续批次仍留在唯一链`() = runBlocking {
         val events = mutableListOf<String>()
-        val targetId = UUID.randomUUID()
-        val otherId = UUID.randomUUID()
-        val workManager = FakeBatchSchedulerWorkManager(
-            events = events,
-            snapshots = listOf(
-                BatchScheduledWorkSnapshot(targetId, WorkInfo.State.BLOCKED, 4L),
-                BatchScheduledWorkSnapshot(otherId, WorkInfo.State.RUNNING, 5L),
-            ),
-        )
+        val workManager = FakeBatchSchedulerWorkManager(events = events)
         val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore(events))
+        scheduler.enqueue(4L)
+        scheduler.enqueue(5L)
 
         scheduler.cancel(4L)
+        scheduler.enqueue(6L)
 
+        // 不取消目标 request，避免 WorkManager 把 CANCELLED 级联到依赖它的其他批次。
         assertEquals(
-            listOf("store.cancel:4", "work.list", "work.cancel:$targetId"),
+            listOf(
+                "work.enqueue:frameyu-batch-analysis:4",
+                "work.enqueue:frameyu-batch-analysis:5",
+                "store.cancel:4",
+                "work.enqueue:frameyu-batch-analysis:6",
+            ),
             events,
         )
-        assertFalse(workManager.cancelledIds.contains(otherId))
-        assertTrue(workManager.cancelledUniqueNames.isEmpty())
+        assertEquals(listOf(4L, 5L, 6L), workManager.enqueued.map(EnqueuedBatchWork::batchId))
     }
 
     @Test
@@ -132,21 +127,36 @@ class BatchAnalysisSchedulerTest {
             runCatching { scheduler.retryFailures(0L) }.exceptionOrNull() is IllegalArgumentException,
         )
     }
+
+    @Test
+    fun `Application 对批量 scheduler 保持 lazy 公开访问`() {
+        val delegateField = FrameYuApplication::class.java.declaredFields
+            .singleOrNull { field -> field.name == "batchAnalysisWorkScheduler\$delegate" }
+
+        assertTrue(delegateField != null)
+        assertEquals(Lazy::class.java, delegateField?.type)
+        assertTrue(
+            FrameYuApplication::class.java.methods.any { method ->
+                method.name == "getBatchAnalysisWorkScheduler" &&
+                    method.returnType == BatchAnalysisScheduler::class.java
+            },
+        )
+    }
 }
 
 private data class EnqueuedBatchWork(
     val uniqueWorkName: String,
     val policy: ExistingWorkPolicy,
     val request: OneTimeWorkRequest,
-)
+) {
+    val batchId: Long
+        get() = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
+}
 
 private class FakeBatchSchedulerWorkManager(
     private val events: MutableList<String> = mutableListOf(),
-    private val snapshots: List<BatchScheduledWorkSnapshot> = emptyList(),
 ) : BatchSchedulerWorkManager {
     val enqueued = mutableListOf<EnqueuedBatchWork>()
-    val cancelledIds = mutableListOf<UUID>()
-    val cancelledUniqueNames = mutableListOf<String>()
 
     override fun enqueueUniqueWork(
         uniqueWorkName: String,
@@ -156,21 +166,6 @@ private class FakeBatchSchedulerWorkManager(
         enqueued += EnqueuedBatchWork(uniqueWorkName, existingWorkPolicy, request)
         val batchId = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
         events += "work.enqueue:$uniqueWorkName:$batchId"
-    }
-
-    override suspend fun getUniqueWork(): List<BatchScheduledWorkSnapshot> {
-        events += "work.list"
-        return snapshots
-    }
-
-    override fun cancelWorkById(id: UUID) {
-        cancelledIds += id
-        events += "work.cancel:$id"
-    }
-
-    override fun cancelUniqueWork(uniqueWorkName: String) {
-        cancelledUniqueNames += uniqueWorkName
-        events += "work.cancelUnique:$uniqueWorkName"
     }
 }
 
