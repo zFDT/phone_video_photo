@@ -61,6 +61,38 @@ class RoomVideoAnalysisWorkerRunner(
         taskId: Long,
         onProgress: suspend (VideoAnalysisProgress) -> Unit,
     ): VideoAnalysisTaskResult {
+        var frameSource: VideoFrameSource? = null
+        return runTaskLifecycle(
+            taskId = taskId,
+            markCancelled = { cancelledTaskId, cancelled ->
+                database.analysisTaskDao().updateTaskStatus(
+                    cancelledTaskId,
+                    AnalysisTask.Status.CANCELLED.name,
+                    cancelled.message ?: "视频分析已取消",
+                    nowMillis(),
+                )
+            },
+            markFailed = { failedTaskId, error ->
+                database.analysisTaskDao().updateTaskStatus(
+                    failedTaskId,
+                    AnalysisTask.Status.FAILED.name,
+                    error.message ?: "视频分析失败",
+                    nowMillis(),
+                )
+            },
+            closeResource = { frameSource?.close() },
+        ) {
+            runAnalysis(taskId, onProgress) { createdSource ->
+                frameSource = createdSource
+            }
+        }
+    }
+
+    private suspend fun runAnalysis(
+        taskId: Long,
+        onProgress: suspend (VideoAnalysisProgress) -> Unit,
+        registerFrameSource: (VideoFrameSource) -> Unit,
+    ): VideoAnalysisTaskResult {
         val task = database.analysisTaskDao().getTaskProgress(taskId)
             ?: error("分析任务不存在：$taskId")
         val media = database.mediaAssetDao().getById(task.mediaAssetId)
@@ -87,7 +119,6 @@ class RoomVideoAnalysisWorkerRunner(
         }
         database.analysisTaskDao().updateTaskStatus(taskId, AnalysisTask.Status.RUNNING.name, null, nowMillis())
 
-        var frameSource: VideoFrameSource? = null
         var previousSample: FrameSample? = null
         var frameIndex = checkpoint?.sampledFrameCount?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
         val analyzer = RuleBasedFrameAnalyzer()
@@ -99,7 +130,7 @@ class RoomVideoAnalysisWorkerRunner(
             ),
         )
 
-        return try {
+        return kotlin.run {
             val frameModelStore = frameModelStoreProvider()
             val frameModelOrchestrator = VideoFrameModelOrchestrator(
                 analyzerProvider = {
@@ -111,7 +142,7 @@ class RoomVideoAnalysisWorkerRunner(
                 store = frameModelStore,
             )
             val activeFrameSource = frameSourceProvider()
-            frameSource = activeFrameSource
+            registerFrameSource(activeFrameSource)
             activeFrameSource.setDataSource(context, Uri.parse(media.uri))
             val result = runner.run(
                 plan = plan,
@@ -162,25 +193,6 @@ class RoomVideoAnalysisWorkerRunner(
             val errorMessage = (result as? VideoAnalysisTaskResult.Failed)?.error?.message
             database.analysisTaskDao().updateTaskStatus(taskId, status.name, errorMessage, nowMillis())
             result
-        } catch (cancelled: CancellationException) {
-            persistCancellationAndRethrow(cancelled) {
-                database.analysisTaskDao().updateTaskStatus(
-                    taskId,
-                    AnalysisTask.Status.CANCELLED.name,
-                    cancelled.message ?: "视频分析已取消",
-                    nowMillis(),
-                )
-            }
-        } catch (error: Throwable) {
-            database.analysisTaskDao().updateTaskStatus(
-                taskId,
-                AnalysisTask.Status.FAILED.name,
-                error.message ?: "视频分析失败",
-                nowMillis(),
-            )
-            throw error
-        } finally {
-            frameSource?.close()
         }
     }
 
@@ -191,7 +203,7 @@ class RoomVideoAnalysisWorkerRunner(
             when (monitor.stateFor(thermalStatusProvider())) {
                 ThermalState.RUNNING -> return
                 ThermalState.PAUSED -> delay(THERMAL_POLL_INTERVAL_MILLIS)
-                ThermalState.STOPPED -> throw kotlinx.coroutines.CancellationException("设备温度过高，已暂停分析")
+                ThermalState.STOPPED -> throw CancellationException("设备温度过高，已暂停分析")
             }
         }
     }

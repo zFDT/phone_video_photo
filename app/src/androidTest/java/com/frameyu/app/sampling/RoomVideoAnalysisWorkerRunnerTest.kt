@@ -18,6 +18,10 @@ import com.frameyu.app.vision.LabelScore
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -172,7 +176,8 @@ class RoomVideoAnalysisWorkerRunnerTest {
     fun `模型provider取消原样传播并持久化终态且不推进checkpoint`() = runBlocking {
         seed(durationMillis = 1L)
         val cancellation = CancellationException("model provider cancelled")
-        val source = RecordingFrameSource()
+        val closeFailure = IllegalStateException("frame source close failed")
+        val source = RecordingFrameSource(closeFailure)
         val runner = runner(
             analyzerProvider = { throw cancellation },
             frameStore = store,
@@ -182,6 +187,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         val actual = captureCancellation { runner.run(TASK_ID) { } }
 
         assertSame(cancellation, actual)
+        assertEquals(listOf(closeFailure), actual.suppressedExceptions)
         assertCancelledWithoutProgress(source)
     }
 
@@ -203,6 +209,48 @@ class RoomVideoAnalysisWorkerRunnerTest {
         assertTrue(source.requestedTimestamps.isEmpty())
     }
 
+    @Test
+    fun `首次Room读取前Job已取消仍收敛QUEUED任务`() = runBlocking {
+        seed(durationMillis = 1L)
+        val cancellation = CancellationException("cancel before room read")
+        val source = RecordingFrameSource()
+
+        val deferred = async(start = CoroutineStart.UNDISPATCHED) {
+            currentCoroutineContext().job.cancel(cancellation)
+            runner(analyzer { frameResult() }, store, source).run(TASK_ID) { }
+        }
+        val actual = captureCancellation { deferred.await() }
+
+        assertSame(cancellation, actual)
+        assertEquals("CANCELLED", database.analysisTaskDao().getTaskProgress(TASK_ID)?.status)
+        assertTrue(source.requestedTimestamps.isEmpty())
+    }
+
+    @Test
+    fun `更新RUNNING挂起点Job取消后仍收敛任务`() = runBlocking {
+        seed(durationMillis = 1L)
+        val cancellation = CancellationException("cancel while marking running")
+        val source = RecordingFrameSource()
+
+        val deferred = async {
+            val analysisJob = currentCoroutineContext().job
+            runner(
+                analyzerProvider = { analyzer { frameResult() } },
+                frameStore = store,
+                source = source,
+                nowMillis = {
+                    analysisJob.cancel(cancellation)
+                    99L
+                },
+            ).run(TASK_ID) { }
+        }
+        val actual = captureCancellation { deferred.await() }
+
+        assertSame(cancellation, actual)
+        assertEquals("CANCELLED", database.analysisTaskDao().getTaskProgress(TASK_ID)?.status)
+        assertTrue(source.requestedTimestamps.isEmpty())
+    }
+
     private fun runner(
         analyzer: FrameModelAnalyzer,
         frameStore: RoomVideoFrameModelStore,
@@ -218,12 +266,13 @@ class RoomVideoAnalysisWorkerRunnerTest {
         frameStore: RoomVideoFrameModelStore,
         source: VideoFrameSource,
         thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
+        nowMillis: () -> Long = { 99L },
     ) = RoomVideoAnalysisWorkerRunner(
         context = context,
         database = database,
         frameModelAnalyzerProvider = analyzerProvider,
         frameModelStoreProvider = { frameStore },
-        nowMillis = { 99L },
+        nowMillis = nowMillis,
         thermalStatusProvider = thermalStatusProvider,
         frameSourceProvider = { source },
     )
@@ -310,7 +359,9 @@ class RoomVideoAnalysisWorkerRunnerTest {
         totalSampleCount = totalSampleCount,
     )
 
-    private class RecordingFrameSource : VideoFrameSource {
+    private class RecordingFrameSource(
+        private val closeFailure: Throwable? = null,
+    ) : VideoFrameSource {
         val requestedTimestamps = mutableListOf<Long>()
         var closed: Boolean = false
             private set
@@ -324,6 +375,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
 
         override fun close() {
             closed = true
+            closeFailure?.let { throw it }
         }
     }
 
