@@ -7,11 +7,17 @@ class SamplingPlan private constructor(
     val videoDurationMillis: Long,
     val ranges: List<SampleRange>,
 ) {
-    val planId: String = sha256("$videoDurationMillis|${ranges.joinToString()}")
+    val planId: String = sha256(
+        "$SAMPLING_ALGORITHM_VERSION|$videoDurationMillis|${ranges.joinToString()}",
+    )
 
-    fun sampleTimestamps(): List<Long> = ranges.flatMap { range ->
+    fun sampleTimestamps(): List<Long> = ranges.indices.flatMap(::sampleTimestamps)
+
+    internal fun sampleTimestamps(rangeIndex: Int): List<Long> {
+        require(rangeIndex in ranges.indices) { "采样区间索引超出范围" }
+        val range = ranges[rangeIndex]
         val stepMillis = 1_000.0 / range.framesPerSecond
-        generateSequence(0L) { it + 1L }
+        return generateSequence(0L) { it + 1L }
             .map { range.startMillis + (it * stepMillis).toLong() }
             .takeWhile { it < range.endMillis }
             .toList()
@@ -25,6 +31,9 @@ class SamplingPlan private constructor(
             return ranges.drop(checkpoint.rangeIndex + 1)
         }
         require(current.contains(checkpoint.nextTimestampMillis)) { "断点时间不属于当前采样区间" }
+        require(checkpoint.nextTimestampMillis in sampleTimestamps(checkpoint.rangeIndex)) {
+            "断点时间不是当前采样算法生成的时间戳"
+        }
         return buildList {
             add(current.copy(startMillis = checkpoint.nextTimestampMillis))
             addAll(ranges.drop(checkpoint.rangeIndex + 1))
@@ -33,6 +42,7 @@ class SamplingPlan private constructor(
 
     companion object {
         const val MAX_VIDEO_DURATION_MILLIS = 6 * 60 * 60 * 1_000L
+        internal const val SAMPLING_ALGORITHM_VERSION = "canonical-index-floor-v2"
 
         fun create(
             videoDurationMillis: Long,

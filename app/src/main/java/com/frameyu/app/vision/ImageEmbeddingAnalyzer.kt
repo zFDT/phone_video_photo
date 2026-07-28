@@ -19,22 +19,30 @@ interface ImageEmbeddingAnalyzer : Closeable {
 }
 
 /** MediaPipe Image Embedder 的同步适配器，调用方应在后台线程执行 analyze。 */
-class MediaPipeImageEmbeddingAnalyzer(
-    context: Context,
+class MediaPipeImageEmbeddingAnalyzer internal constructor(
     private val modelAssetPath: String,
+    embedderFactory: () -> ImageEmbedder,
 ) : ImageEmbeddingAnalyzer {
+    constructor(
+        context: Context,
+        modelAssetPath: String,
+    ) : this(
+        modelAssetPath = modelAssetPath,
+        embedderFactory = {
+            ImageEmbedder.createFromOptions(
+                context,
+                ImageEmbedder.ImageEmbedderOptions.builder()
+                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
+                    .setL2Normalize(true)
+                    .setQuantize(false)
+                    .build(),
+            )
+        },
+    )
+
     private val closed = AtomicBoolean(false)
     private val inferenceLock = Any()
-    private val initialization: Result<ImageEmbedder> = runCatching {
-        ImageEmbedder.createFromOptions(
-            context,
-            ImageEmbedder.ImageEmbedderOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
-                .setL2Normalize(true)
-                .setQuantize(false)
-                .build(),
-        )
-    }
+    private val initialization: Result<ImageEmbedder> = initializeMediaPipeModel(embedderFactory)
     private val embedder: ImageEmbedder? = initialization.getOrNull()
     private val initializationFailure: Throwable? = initialization.exceptionOrNull()
 

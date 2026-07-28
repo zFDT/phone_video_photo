@@ -36,23 +36,31 @@ interface ObjectDetectorAnalyzer : Closeable {
 }
 
 /** MediaPipe Object Detector 的同步适配器。 */
-class MediaPipeObjectDetectorAnalyzer(
-    context: Context,
+class MediaPipeObjectDetectorAnalyzer internal constructor(
     private val modelAssetPath: String,
+    detectorFactory: () -> ObjectDetector,
 ) : ObjectDetectorAnalyzer {
+    constructor(
+        context: Context,
+        modelAssetPath: String,
+    ) : this(
+        modelAssetPath = modelAssetPath,
+        detectorFactory = {
+            ObjectDetector.createFromOptions(
+                context,
+                ObjectDetector.ObjectDetectorOptions.builder()
+                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
+                    .setRunningMode(RunningMode.IMAGE)
+                    .setMaxResults(MAX_RESULTS)
+                    .setScoreThreshold(SCORE_THRESHOLD)
+                    .build(),
+            )
+        },
+    )
+
     private val closed = AtomicBoolean(false)
     private val inferenceLock = Any()
-    private val initialization: Result<ObjectDetector> = runCatching {
-        ObjectDetector.createFromOptions(
-            context,
-            ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
-                .setRunningMode(RunningMode.IMAGE)
-                .setMaxResults(MAX_RESULTS)
-                .setScoreThreshold(SCORE_THRESHOLD)
-                .build(),
-        )
-    }
+    private val initialization: Result<ObjectDetector> = initializeMediaPipeModel(detectorFactory)
     private val detector = initialization.getOrNull()
 
     override fun detect(bitmap: Bitmap): List<DetectionObservation> = synchronized(inferenceLock) {

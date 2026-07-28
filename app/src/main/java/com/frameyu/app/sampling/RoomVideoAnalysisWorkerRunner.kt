@@ -15,7 +15,33 @@ import com.frameyu.app.system.ThermalMonitor
 import com.frameyu.app.system.ThermalState
 import com.frameyu.app.system.ThermalStatus
 import com.frameyu.app.vision.FrameModelAnalyzer
+import java.io.Closeable
 import kotlinx.coroutines.delay
+
+/** 视频帧解码薄边界，便于在不读取真实媒体文件时验证生产 runner。 */
+interface VideoFrameSource : Closeable {
+    fun setDataSource(context: Context, uri: Uri)
+
+    fun getFrameAt(timestampMillis: Long): Bitmap?
+}
+
+private class MediaMetadataRetrieverFrameSource : VideoFrameSource {
+    private val retriever = MediaMetadataRetriever()
+
+    override fun setDataSource(context: Context, uri: Uri) {
+        retriever.setDataSource(context, uri)
+    }
+
+    override fun getFrameAt(timestampMillis: Long): Bitmap? =
+        retriever.getFrameAtTime(
+            timestampMillis * 1_000L,
+            MediaMetadataRetriever.OPTION_CLOSEST,
+        )
+
+    override fun close() {
+        retriever.release()
+    }
+}
 
 /** 使用 Room 媒体索引、规则评分和本地模型执行视频分析。 */
 class RoomVideoAnalysisWorkerRunner(
@@ -26,6 +52,9 @@ class RoomVideoAnalysisWorkerRunner(
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val concertModeEnabledProvider: () -> Boolean = { false },
     private val thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
+    private val frameSourceProvider: () -> VideoFrameSource = {
+        MediaMetadataRetrieverFrameSource()
+    },
 ) : VideoAnalysisWorkerRunner {
     override suspend fun run(
         taskId: Long,
@@ -57,7 +86,7 @@ class RoomVideoAnalysisWorkerRunner(
         }
         database.analysisTaskDao().updateTaskStatus(taskId, AnalysisTask.Status.RUNNING.name, null, nowMillis())
 
-        val retriever = MediaMetadataRetriever()
+        var frameSource: VideoFrameSource? = null
         var previousSample: FrameSample? = null
         var frameIndex = checkpoint?.sampledFrameCount?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
         val analyzer = RuleBasedFrameAnalyzer()
@@ -80,17 +109,17 @@ class RoomVideoAnalysisWorkerRunner(
                 },
                 store = frameModelStore,
             )
-            retriever.setDataSource(context, Uri.parse(media.uri))
+            val activeFrameSource = frameSourceProvider()
+            frameSource = activeFrameSource
+            activeFrameSource.setDataSource(context, Uri.parse(media.uri))
             val result = runner.run(
                 plan = plan,
                 checkpoint = checkpoint,
                 onProgress = onProgress,
             ) { timestampMillis ->
                 awaitThermalWindow()
-                val bitmap = retriever.getFrameAtTime(
-                    timestampMillis * 1_000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                ) ?: error("无法读取时间 ${timestampMillis}ms 的视频帧")
+                val bitmap = activeFrameSource.getFrameAt(timestampMillis)
+                    ?: error("无法读取时间 ${timestampMillis}ms 的视频帧")
                 try {
                     val analysisBitmap = bitmap.scaleForAnalysis()
                     try {
@@ -142,7 +171,7 @@ class RoomVideoAnalysisWorkerRunner(
             )
             throw error
         } finally {
-            retriever.release()
+            frameSource?.close()
         }
     }
 

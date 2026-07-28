@@ -1,6 +1,8 @@
 package com.frameyu.app.sampling
 
+import java.security.MessageDigest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -133,6 +135,43 @@ class SamplingPlanTest {
     }
 
     @Test
+    fun `24帧和15帧时间戳按区间起点与帧序号生成`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 400L,
+            requestedRanges = listOf(
+                SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+                SampleRange(200L, 400L, 15.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+
+        assertEquals(
+            listOf(0L, 41L, 83L, 125L, 166L, 200L, 266L, 333L),
+            plan.sampleTimestamps(),
+        )
+    }
+
+    @Test
+    fun `采样算法版本会使旧计划断点失效`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE)),
+        )
+        val legacyPlanId = sha256("${plan.videoDurationMillis}|${plan.ranges.joinToString()}")
+
+        assertNotEquals(legacyPlanId, plan.planId)
+        assertThrows(IllegalArgumentException::class.java) {
+            plan.remainingRanges(
+                SamplingCheckpoint(
+                    planId = legacyPlanId,
+                    rangeIndex = 0,
+                    nextTimestampMillis = 82L,
+                    sampledFrameCount = 2L,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `断点可以从当前时间恢复并保持剩余区间的覆盖`() {
         val plan = SamplingPlan.create(
             videoDurationMillis = 10_000L,
@@ -198,4 +237,8 @@ class SamplingPlanTest {
             ).isEmpty(),
         )
     }
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray())
+        .joinToString("") { "%02x".format(it) }
 }

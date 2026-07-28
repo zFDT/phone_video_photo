@@ -20,7 +20,7 @@ data class AudioFeatureWindow(
 class ConcertAudioAnalyzer {
     fun analyze(videoDurationMillis: Long, windows: List<AudioFeatureWindow>): List<SampleRange> {
         require(videoDurationMillis > 0L && videoDurationMillis <= SamplingPlan.MAX_VIDEO_DURATION_MILLIS) {
-            "视频时长必须在 1 毫秒到 2 小时之间"
+            "视频时长必须在 1 毫秒到 6 小时之间"
         }
         val candidates = windows.mapNotNull { window ->
             val end = window.endMillis.coerceAtMost(videoDurationMillis)

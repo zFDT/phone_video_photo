@@ -30,6 +30,84 @@ class VideoAnalysisTaskTest {
     }
 
     @Test
+    fun `24帧和15帧执行时间戳与计划完全一致`() = runBlocking {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 400L,
+            requestedRanges = listOf(
+                SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+                SampleRange(200L, 400L, 15.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val sampled = mutableListOf<Long>()
+
+        val result = VideoAnalysisTask(SamplingCheckpointStore { }).run(plan) { sampled += it }
+
+        assertTrue(result is VideoAnalysisTaskResult.Completed)
+        assertEquals(plan.sampleTimestamps(), sampled)
+    }
+
+    @Test
+    fun `checkpoint始终指向下一canonical时间戳并在区间末端指向end`() = runBlocking {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE)),
+        )
+        val saved = mutableListOf<VideoAnalysisProgress>()
+
+        VideoAnalysisTask(SamplingCheckpointStore { saved += it }).run(plan) { }
+
+        assertEquals(listOf(41L, 83L, 125L, 166L, 200L), saved.map { it.nextTimestampMillis })
+    }
+
+    @Test
+    fun `多区间从canonical断点恢复不会重复或漂移`() = runBlocking {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 500L,
+            requestedRanges = listOf(
+                SampleRange(100L, 300L, 15.0, SamplingTier.HIGH_VALUE),
+                SampleRange(300L, 500L, 24.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val fullProgress = mutableListOf<VideoAnalysisProgress>()
+        VideoAnalysisTask(SamplingCheckpointStore { fullProgress += it }).run(plan) { }
+        val checkpointProgress = fullProgress.first { it.nextTimestampMillis == 383L }
+        val checkpoint = SamplingCheckpoint(
+            checkpointProgress.planId,
+            checkpointProgress.rangeIndex,
+            checkpointProgress.nextTimestampMillis,
+            checkpointProgress.sampledFrameCount,
+        )
+        val resumed = mutableListOf<Long>()
+
+        val result = VideoAnalysisTask(SamplingCheckpointStore { }).run(plan, checkpoint) { resumed += it }
+
+        assertTrue(result is VideoAnalysisTaskResult.Completed)
+        assertEquals(plan.sampleTimestamps().drop(checkpoint.sampledFrameCount.toInt()), resumed)
+    }
+
+    @Test
+    fun `旧算法planId断点会被拒绝而不是混用非canonical时间戳`() = runBlocking {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE)),
+        )
+        val sampled = mutableListOf<Long>()
+
+        val result = VideoAnalysisTask(SamplingCheckpointStore { }).run(
+            plan,
+            SamplingCheckpoint(
+                planId = "0".repeat(64),
+                rangeIndex = 0,
+                nextTimestampMillis = 82L,
+                sampledFrameCount = 2L,
+            ),
+        ) { sampled += it }
+
+        assertTrue(result is VideoAnalysisTaskResult.Failed)
+        assertTrue(sampled.isEmpty())
+    }
+
+    @Test
     fun `采样回调失败时保留失败进度`() = runBlocking {
         val plan = SamplingPlan.create(3_000L)
         val result = VideoAnalysisTask(SamplingCheckpointStore { }).run(plan) {

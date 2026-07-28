@@ -8,6 +8,7 @@ import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.imageclassifier.ImageClassifier
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 
 /** 图像分类的稳定结果，不向上层暴露 MediaPipe 类型。 */
 data class LabelScore(
@@ -28,22 +29,30 @@ interface ImageClassifierAnalyzer : Closeable {
 }
 
 /** MediaPipe Image Classifier 的同步适配器。 */
-class MediaPipeImageClassifierAnalyzer(
-    context: Context,
+class MediaPipeImageClassifierAnalyzer internal constructor(
     private val modelAssetPath: String,
+    classifierFactory: () -> ImageClassifier,
 ) : ImageClassifierAnalyzer {
+    constructor(
+        context: Context,
+        modelAssetPath: String,
+    ) : this(
+        modelAssetPath = modelAssetPath,
+        classifierFactory = {
+            ImageClassifier.createFromOptions(
+                context,
+                ImageClassifier.ImageClassifierOptions.builder()
+                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
+                    .setRunningMode(RunningMode.IMAGE)
+                    .setMaxResults(MAX_RESULTS)
+                    .build(),
+            )
+        },
+    )
+
     private val closed = AtomicBoolean(false)
     private val inferenceLock = Any()
-    private val initialization: Result<ImageClassifier> = runCatching {
-        ImageClassifier.createFromOptions(
-            context,
-            ImageClassifier.ImageClassifierOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath(modelAssetPath).build())
-                .setRunningMode(RunningMode.IMAGE)
-                .setMaxResults(MAX_RESULTS)
-                .build(),
-        )
-    }
+    private val initialization: Result<ImageClassifier> = initializeMediaPipeModel(classifierFactory)
     private val classifier = initialization.getOrNull()
 
     override fun classify(bitmap: Bitmap): List<LabelScore> = synchronized(inferenceLock) {
@@ -95,3 +104,12 @@ class MediaPipeImageClassifierAnalyzer(
 }
 
 internal fun Throwable.modelMessage(): String = message?.takeIf(String::isNotBlank) ?: "未知模型错误"
+
+/** 只缓存可恢复初始化异常；取消和 JVM fatal Error 必须由调用方立即处理。 */
+internal fun <T> initializeMediaPipeModel(factory: () -> T): Result<T> = try {
+    Result.success(factory())
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (error: Exception) {
+    Result.failure(error)
+}

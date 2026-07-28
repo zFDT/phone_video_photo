@@ -30,6 +30,28 @@ class VideoClassificationAggregationCoordinatorTest {
         assertEquals(VIDEO_AGGREGATE_TIMESTAMP_MILLIS, store.savedTimestampMillis)
     }
 
+    @Test
+    fun `24帧执行结果可由同一canonical计划完整聚合`() = runBlocking {
+        val modelSha = "b".repeat(64)
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE)),
+        )
+        val persisted = mutableListOf<TimedLabels>()
+        val store = RecordingAggregationStore(persisted)
+
+        VideoAnalysisTask(SamplingCheckpointStore { }).run(plan) { timestamp ->
+            persisted += TimedLabels(timestamp, listOf(LabelScore("concert", 0.9f)))
+        }
+        val result = VideoClassificationAggregationCoordinator(store).rebuildAndSave(
+            mediaId = 42L,
+            modelSha256 = modelSha,
+            plannedTimestampsMillis = plan.sampleTimestamps(),
+        )
+
+        assertEquals(1f, result.single().coverage, 0.0001f)
+    }
+
     private class RecordingAggregationStore(
         private val persisted: List<TimedLabels>,
     ) : VideoClassificationAggregationStore {

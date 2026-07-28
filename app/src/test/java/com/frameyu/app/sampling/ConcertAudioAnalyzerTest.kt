@@ -93,10 +93,12 @@ class ConcertAudioAnalyzerTest {
     }
 
     @Test
-    fun `视频时长必须不超过两小时`() {
-        assertThrows<IllegalArgumentException> {
+    fun `视频时长必须不超过六小时且错误消息一致`() {
+        val error = assertThrows<IllegalArgumentException> {
             analyzer.analyze(SamplingPlan.MAX_VIDEO_DURATION_MILLIS + 1L, emptyList())
         }
+
+        assertEquals("视频时长必须在 1 毫秒到 6 小时之间", error.message)
     }
 
     @Test
@@ -109,12 +111,12 @@ class ConcertAudioAnalyzerTest {
         }
     }
 
-    private inline fun <reified T : Throwable> assertThrows(block: () -> Unit) {
+    private inline fun <reified T : Throwable> assertThrows(block: () -> Unit): T {
         try {
             block()
         } catch (error: Throwable) {
             assertTrue(error is T)
-            return
+            return error as T
         }
         throw AssertionError("预期抛出 ${T::class.java.simpleName}")
     }

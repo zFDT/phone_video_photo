@@ -42,12 +42,20 @@ class VideoAnalysisTask(
             require(checkpoint == null || checkpoint.planId == planId) { "断点不属于当前采样计划" }
             while (rangeIndex < plan.ranges.size) {
                 val range = plan.ranges[rangeIndex]
-                val timestamps = plan.sampleTimestampsForRange(range, nextTimestamp)
-                for (timestamp in timestamps) {
+                val timestamps = plan.sampleTimestamps(rangeIndex)
+                val startIndex = if (nextTimestamp == range.endMillis) {
+                    timestamps.size
+                } else {
+                    timestamps.indexOf(nextTimestamp).also {
+                        require(it >= 0) { "断点时间不是当前采样算法生成的时间戳" }
+                    }
+                }
+                for (timestampIndex in startIndex until timestamps.size) {
+                    val timestamp = timestamps[timestampIndex]
                     currentCoroutineContext().ensureActive()
                     onTimestamp(timestamp)
                     sampledCount++
-                    nextTimestamp = timestamp + (1_000.0 / range.framesPerSecond).toLong().coerceAtLeast(1L)
+                    nextTimestamp = timestamps.getOrNull(timestampIndex + 1) ?: range.endMillis
                     val progress = VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount)
                     checkpointStore.save(progress)
                     onProgress(progress)
@@ -61,11 +69,5 @@ class VideoAnalysisTask(
         } catch (error: Exception) {
             VideoAnalysisTaskResult.Failed(VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount), error)
         }
-    }
-
-    private fun SamplingPlan.sampleTimestampsForRange(range: SampleRange, fromMillis: Long): List<Long> {
-        val start = fromMillis.coerceAtLeast(range.startMillis)
-        val step = (1_000.0 / range.framesPerSecond).toLong().coerceAtLeast(1L)
-        return generateSequence(start) { it + step }.takeWhile { it < range.endMillis }.toList()
     }
 }
