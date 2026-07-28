@@ -18,7 +18,8 @@ class SamplingPlan private constructor(
         val range = ranges[rangeIndex]
         val stepMillis = 1_000.0 / range.framesPerSecond
         return generateSequence(0L) { it + 1L }
-            .map { range.startMillis + (it * stepMillis).toLong() }
+            .map { range.samplingOriginMillis + (it * stepMillis).toLong() }
+            .dropWhile { it < range.startMillis }
             .takeWhile { it < range.endMillis }
             .toList()
     }
@@ -42,7 +43,7 @@ class SamplingPlan private constructor(
 
     companion object {
         const val MAX_VIDEO_DURATION_MILLIS = 6 * 60 * 60 * 1_000L
-        internal const val SAMPLING_ALGORITHM_VERSION = "canonical-index-floor-v2"
+        internal const val SAMPLING_ALGORITHM_VERSION = "canonical-origin-index-floor-v3"
 
         fun create(
             videoDurationMillis: Long,

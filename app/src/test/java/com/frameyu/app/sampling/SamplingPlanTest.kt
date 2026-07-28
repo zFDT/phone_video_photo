@@ -172,6 +172,89 @@ class SamplingPlanTest {
     }
 
     @Test
+    fun `24帧恢复区间保持原canonical相位后缀`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(
+                SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val checkpoint = SamplingCheckpoint(
+            planId = plan.planId,
+            rangeIndex = 0,
+            nextTimestampMillis = 83L,
+            sampledFrameCount = 2L,
+        )
+
+        assertEquals(
+            listOf(83L, 125L, 166L),
+            rebuiltRemainingTimestamps(plan, checkpoint),
+        )
+    }
+
+    @Test
+    fun `15帧恢复区间保持原canonical相位后缀`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 300L,
+            requestedRanges = listOf(
+                SampleRange(0L, 300L, 15.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val checkpoint = SamplingCheckpoint(
+            planId = plan.planId,
+            rangeIndex = 0,
+            nextTimestampMillis = 133L,
+            sampledFrameCount = 2L,
+        )
+
+        assertEquals(
+            listOf(133L, 200L, 266L),
+            rebuiltRemainingTimestamps(plan, checkpoint),
+        )
+    }
+
+    @Test
+    fun `采样相位算法升级会改变planId`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(
+                SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val versionTwoPlanId = sha256(
+            "canonical-index-floor-v2|200|" +
+                "SampleRange(startMillis=0, endMillis=200, " +
+                "framesPerSecond=24.0, tier=HIGH_VALUE)",
+        )
+
+        assertNotEquals(versionTwoPlanId, plan.planId)
+    }
+
+    @Test
+    fun `不同采样相位原点生成不同planId`() {
+        val reanchored = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(
+                SampleRange(83L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+        val phasePreserved = SamplingPlan.create(
+            videoDurationMillis = 200L,
+            requestedRanges = listOf(
+                SampleRange(
+                    83L,
+                    200L,
+                    24.0,
+                    SamplingTier.HIGH_VALUE,
+                    samplingOriginMillis = 0L,
+                ),
+            ),
+        )
+
+        assertNotEquals(reanchored.planId, phasePreserved.planId)
+    }
+
+    @Test
     fun `断点可以从当前时间恢复并保持剩余区间的覆盖`() {
         val plan = SamplingPlan.create(
             videoDurationMillis = 10_000L,
@@ -190,7 +273,13 @@ class SamplingPlanTest {
 
         assertEquals(
             listOf(
-                SampleRange(5_000L, 6_000L, 8.0, SamplingTier.FOCUSED),
+                SampleRange(
+                    5_000L,
+                    6_000L,
+                    8.0,
+                    SamplingTier.FOCUSED,
+                    samplingOriginMillis = 4_000L,
+                ),
                 SampleRange(6_000L, 10_000L, 1.0, SamplingTier.COARSE),
             ),
             remaining,
@@ -241,4 +330,14 @@ class SamplingPlanTest {
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
+
+    private fun rebuiltRemainingTimestamps(
+        plan: SamplingPlan,
+        checkpoint: SamplingCheckpoint,
+    ): List<Long> = SamplingPlan.create(
+        videoDurationMillis = plan.videoDurationMillis,
+        requestedRanges = plan.remainingRanges(checkpoint),
+    ).sampleTimestamps().filter { timestamp ->
+        timestamp >= checkpoint.nextTimestampMillis
+    }
 }

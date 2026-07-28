@@ -6,10 +6,12 @@ data class SampleRange(
     val endMillis: Long,
     val framesPerSecond: Double,
     val tier: SamplingTier,
+    val samplingOriginMillis: Long = startMillis,
 ) {
     init {
         require(startMillis >= 0L) { "采样开始时间不能为负数" }
         require(endMillis > startMillis) { "采样结束时间必须晚于开始时间" }
+        require(samplingOriginMillis in 0L..startMillis) { "采样相位原点必须在区间起点之前" }
         require(framesPerSecond.isFinite()) { "采样帧率必须是有限数值" }
         require(framesPerSecond in tier.minFramesPerSecond..tier.maxFramesPerSecond) {
             "${tier.name} 采样帧率必须在 ${tier.minFramesPerSecond}～${tier.maxFramesPerSecond} 帧/秒之间"

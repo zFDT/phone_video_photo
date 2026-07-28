@@ -16,6 +16,7 @@ import com.frameyu.app.system.ThermalState
 import com.frameyu.app.system.ThermalStatus
 import com.frameyu.app.vision.FrameModelAnalyzer
 import java.io.Closeable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /** 视频帧解码薄边界，便于在不读取真实媒体文件时验证生产 runner。 */
@@ -161,8 +162,16 @@ class RoomVideoAnalysisWorkerRunner(
             val errorMessage = (result as? VideoAnalysisTaskResult.Failed)?.error?.message
             database.analysisTaskDao().updateTaskStatus(taskId, status.name, errorMessage, nowMillis())
             result
+        } catch (cancelled: CancellationException) {
+            persistCancellationAndRethrow(cancelled) {
+                database.analysisTaskDao().updateTaskStatus(
+                    taskId,
+                    AnalysisTask.Status.CANCELLED.name,
+                    cancelled.message ?: "视频分析已取消",
+                    nowMillis(),
+                )
+            }
         } catch (error: Throwable) {
-            if (error is kotlinx.coroutines.CancellationException) throw error
             database.analysisTaskDao().updateTaskStatus(
                 taskId,
                 AnalysisTask.Status.FAILED.name,

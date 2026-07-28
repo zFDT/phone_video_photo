@@ -11,14 +11,17 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.storage.FeatureCache
 import com.frameyu.app.storage.FeatureCacheMover
+import com.frameyu.app.system.ThermalStatus
 import com.frameyu.app.vision.FrameModelAnalyzer
 import com.frameyu.app.vision.FrameModelResult
 import com.frameyu.app.vision.LabelScore
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -165,18 +168,81 @@ class RoomVideoAnalysisWorkerRunnerTest {
         assertEquals(listOf(0L, 1_000L), source.requestedTimestamps)
     }
 
+    @Test
+    fun `模型provider取消原样传播并持久化终态且不推进checkpoint`() = runBlocking {
+        seed(durationMillis = 1L)
+        val cancellation = CancellationException("model provider cancelled")
+        val source = RecordingFrameSource()
+        val runner = runner(
+            analyzerProvider = { throw cancellation },
+            frameStore = store,
+            source = source,
+        )
+
+        val actual = captureCancellation { runner.run(TASK_ID) { } }
+
+        assertSame(cancellation, actual)
+        assertCancelledWithoutProgress(source)
+    }
+
+    @Test
+    fun `温控停止取消原样传播并持久化终态且不推进checkpoint`() = runBlocking {
+        seed(durationMillis = 1L)
+        val source = RecordingFrameSource()
+        val runner = runner(
+            analyzerProvider = { analyzer { frameResult() } },
+            frameStore = store,
+            source = source,
+            thermalStatusProvider = { ThermalStatus.CRITICAL },
+        )
+
+        val actual = captureCancellation { runner.run(TASK_ID) { } }
+
+        assertEquals("设备温度过高，已暂停分析", actual.message)
+        assertCancelledWithoutProgress(source)
+        assertTrue(source.requestedTimestamps.isEmpty())
+    }
+
     private fun runner(
         analyzer: FrameModelAnalyzer,
         frameStore: RoomVideoFrameModelStore,
         source: VideoFrameSource,
+    ) = runner(
+        analyzerProvider = { analyzer },
+        frameStore = frameStore,
+        source = source,
+    )
+
+    private fun runner(
+        analyzerProvider: () -> FrameModelAnalyzer,
+        frameStore: RoomVideoFrameModelStore,
+        source: VideoFrameSource,
+        thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
     ) = RoomVideoAnalysisWorkerRunner(
         context = context,
         database = database,
-        frameModelAnalyzerProvider = { analyzer },
+        frameModelAnalyzerProvider = analyzerProvider,
         frameModelStoreProvider = { frameStore },
         nowMillis = { 99L },
+        thermalStatusProvider = thermalStatusProvider,
         frameSourceProvider = { source },
     )
+
+    private suspend fun assertCancelledWithoutProgress(source: RecordingFrameSource) {
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("CANCELLED", task.status)
+        assertEquals(0L, task.sampledFrameCount)
+        assertEquals(0L, task.currentTimestampMillis)
+        assertTrue(source.closed)
+    }
+
+    private suspend fun captureCancellation(block: suspend () -> Unit): CancellationException =
+        try {
+            block()
+            throw AssertionError("预期传播 CancellationException")
+        } catch (cancelled: CancellationException) {
+            cancelled
+        }
 
     private suspend fun seed(
         durationMillis: Long,
@@ -246,6 +312,8 @@ class RoomVideoAnalysisWorkerRunnerTest {
 
     private class RecordingFrameSource : VideoFrameSource {
         val requestedTimestamps = mutableListOf<Long>()
+        var closed: Boolean = false
+            private set
 
         override fun setDataSource(context: Context, uri: Uri) = Unit
 
@@ -254,7 +322,9 @@ class RoomVideoAnalysisWorkerRunnerTest {
             return Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         }
 
-        override fun close() = Unit
+        override fun close() {
+            closed = true
+        }
     }
 
     private companion object {
