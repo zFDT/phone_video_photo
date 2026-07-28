@@ -69,6 +69,34 @@ class FrameYuApplication : Application(), Configuration.Provider {
         RoomBatchAnalysisStore(database.batchAnalysisDao())
     }
 
+    private val modelCatalog: ModelAssetCatalog by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        assets.open(MODEL_MANIFEST_PATH).use(ModelAssetCatalog::parse)
+    }
+
+    private val classifierModel: ModelDescriptor by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        modelCatalog.require(ModelId.IMAGE_CLASSIFIER)
+    }
+
+    private val embedderModel: ModelDescriptor by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        modelCatalog.require(ModelId.IMAGE_EMBEDDER)
+    }
+
+    private val detectorModel: ModelDescriptor by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        modelCatalog.require(ModelId.OBJECT_DETECTOR)
+    }
+
+    private val imageClassifierAnalyzer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        MediaPipeImageClassifierAnalyzer(this, classifierModel.assetPath())
+    }
+
+    private val imageEmbeddingAnalyzer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        MediaPipeImageEmbeddingAnalyzer(this, embedderModel.assetPath())
+    }
+
+    private val objectDetectorAnalyzer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        MediaPipeObjectDetectorAnalyzer(this, detectorModel.assetPath())
+    }
+
     private val imageAnalysisCoordinator: ImageAnalysisCoordinator by lazy(
         LazyThreadSafetyMode.SYNCHRONIZED,
         ::createImageAnalysisCoordinator,
@@ -77,7 +105,9 @@ class FrameYuApplication : Application(), Configuration.Provider {
     val batchAnalysisRunner: BatchAnalysisRunner by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         BatchAnalysisRunner(
             store = batchAnalysisStore,
-            coordinator = ImageBatchWorkItemCoordinator(imageAnalysisCoordinator),
+            coordinatorProvider = {
+                ImageBatchWorkItemCoordinator(imageAnalysisCoordinator)
+            },
         )
     }
 
@@ -156,24 +186,20 @@ class FrameYuApplication : Application(), Configuration.Provider {
     }
 
     private fun createImageAnalysisCoordinator(): ImageAnalysisCoordinator {
-        val catalog = assets.open(MODEL_MANIFEST_PATH).use(ModelAssetCatalog::parse)
-        val classifier = catalog.require(ModelId.IMAGE_CLASSIFIER)
-        val detector = catalog.require(ModelId.OBJECT_DETECTOR)
-        val embedder = catalog.require(ModelId.IMAGE_EMBEDDER)
         val stageExecutor = DefaultImageAnalysisStageExecutor(
             decoder = MediaImageDecoder(contentResolver),
-            classifier = MediaPipeImageClassifierAnalyzer(this, classifier.assetPath()),
-            embedder = MediaPipeImageEmbeddingAnalyzer(this, embedder.assetPath()),
-            detector = MediaPipeObjectDetectorAnalyzer(this, detector.assetPath()),
+            classifierProvider = { imageClassifierAnalyzer },
+            embedderProvider = { imageEmbeddingAnalyzer },
+            detectorProvider = { objectDetectorAnalyzer },
         )
         return ImageAnalysisCoordinator(
             store = RoomImageAnalysisStore(database.mediaAssetDao(), database.batchAnalysisDao()),
             featureCache = FeatureCache(filesDir),
             stageExecutor = stageExecutor,
             modelShas = ImageAnalysisModelShas(
-                classification = classifier.sha256,
-                embedding = embedder.sha256,
-                detection = detector.sha256,
+                classification = classifierModel.sha256,
+                embedding = embedderModel.sha256,
+                detection = detectorModel.sha256,
             ),
         )
     }

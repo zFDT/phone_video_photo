@@ -476,15 +476,43 @@ class ImageAnalysisCoordinator(
 /** 使用受限 Bitmap 和现有分析器执行生产图片阶段。 */
 class DefaultImageAnalysisStageExecutor(
     private val decoder: MediaImageDecoder,
-    private val classifier: ImageClassifierAnalyzer,
-    private val embedder: ImageEmbeddingAnalyzer,
-    private val detector: ObjectDetectorAnalyzer,
+    classifierProvider: () -> ImageClassifierAnalyzer,
+    embedderProvider: () -> ImageEmbeddingAnalyzer,
+    detectorProvider: () -> ObjectDetectorAnalyzer,
     private val detectionPolicy: ObjectDetectionPolicy = ObjectDetectionPolicy(),
     private val qualityScorer: QualityScorer = QualityScorer(),
     private val highValueProvider: (MediaAssetEntity) -> Boolean = { false },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val inferenceDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ImageAnalysisStageExecutor {
+    private val analyzers = LazyImageAnalysisStageAnalyzers(
+        classifierProvider = classifierProvider,
+        embedderProvider = embedderProvider,
+        detectorProvider = detectorProvider,
+    )
+
+    constructor(
+        decoder: MediaImageDecoder,
+        classifier: ImageClassifierAnalyzer,
+        embedder: ImageEmbeddingAnalyzer,
+        detector: ObjectDetectorAnalyzer,
+        detectionPolicy: ObjectDetectionPolicy = ObjectDetectionPolicy(),
+        qualityScorer: QualityScorer = QualityScorer(),
+        highValueProvider: (MediaAssetEntity) -> Boolean = { false },
+        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        inferenceDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    ) : this(
+        decoder = decoder,
+        classifierProvider = { classifier },
+        embedderProvider = { embedder },
+        detectorProvider = { detector },
+        detectionPolicy = detectionPolicy,
+        qualityScorer = qualityScorer,
+        highValueProvider = highValueProvider,
+        ioDispatcher = ioDispatcher,
+        inferenceDispatcher = inferenceDispatcher,
+    )
+
     override suspend fun analyzeQuality(media: MediaAssetEntity): ImageQualityScores =
         withBitmap(media) { bitmap ->
             val pixels = IntArray(bitmap.width * bitmap.height)
@@ -509,11 +537,11 @@ class DefaultImageAnalysisStageExecutor(
         }
 
     override suspend fun classify(media: MediaAssetEntity): List<LabelScore> =
-        withBitmap(media, classifier::classify)
+        withBitmap(media, analyzers.classifier()::classify)
 
     override suspend fun embed(media: MediaAssetEntity): FloatArray =
         withBitmap(media) { bitmap ->
-            embedder.analyzeSynchronously(ThumbnailInput.fromBitmap(bitmap)).values
+            analyzers.embedder().analyzeSynchronously(ThumbnailInput.fromBitmap(bitmap)).values
         }
 
     override fun shouldDetect(
@@ -522,7 +550,7 @@ class DefaultImageAnalysisStageExecutor(
     ): Boolean = detectionPolicy.shouldDetect(classifications, highValueProvider(media))
 
     override suspend fun detect(media: MediaAssetEntity): List<DetectionObservation> =
-        withBitmap(media, detector::detect)
+        withBitmap(media, analyzers.detector()::detect)
 
     private suspend fun <Result> withBitmap(
         media: MediaAssetEntity,
@@ -544,6 +572,23 @@ class DefaultImageAnalysisStageExecutor(
         const val SCORE_MAX = 100f
         const val NEUTRAL_SCORE = 0.5f
     }
+}
+
+/** 每个模型只在对应阶段首次使用时创建，并在线程间复用同一实例。 */
+internal class LazyImageAnalysisStageAnalyzers<Classifier, Embedder, Detector>(
+    classifierProvider: () -> Classifier,
+    embedderProvider: () -> Embedder,
+    detectorProvider: () -> Detector,
+) {
+    private val lazyClassifier = lazy(LazyThreadSafetyMode.SYNCHRONIZED, classifierProvider)
+    private val lazyEmbedder = lazy(LazyThreadSafetyMode.SYNCHRONIZED, embedderProvider)
+    private val lazyDetector = lazy(LazyThreadSafetyMode.SYNCHRONIZED, detectorProvider)
+
+    fun classifier(): Classifier = lazyClassifier.value
+
+    fun embedder(): Embedder = lazyEmbedder.value
+
+    fun detector(): Detector = lazyDetector.value
 }
 
 /**

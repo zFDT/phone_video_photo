@@ -486,6 +486,87 @@ class BatchAnalysisRunnerTest {
         assertEquals(WorkItemStatus.PERMANENT_FAILED, store.status(1L))
     }
 
+    @Test
+    fun `进度使用本地状态转换且只在启动和结束读取权威快照`() = runBlocking {
+        val store = FakeBatchAnalysisStore(
+            items(
+                1L to WorkItemStatus.PENDING,
+                2L to WorkItemStatus.RETRYABLE_FAILED,
+                3L to WorkItemStatus.PENDING,
+            ),
+        )
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { item ->
+                when (item.id) {
+                    2L -> throw IOException("仍可重试")
+                    3L -> throw IllegalArgumentException("内容无效")
+                }
+            },
+        )
+        val progress = mutableListOf<BatchAnalysisProgress>()
+
+        val result = runner.run(BATCH_ID, progress::add)
+
+        assertEquals(2, store.snapshotCalls)
+        assertEquals(
+            listOf(
+                0 to 1,
+                1 to 1,
+                1 to 1,
+                1 to 1,
+                1 to 1,
+                1 to 2,
+            ),
+            progress.map { it.completed to it.failed },
+        )
+        assertEquals(1, result.completed)
+        assertEquals(1, result.retryableFailed)
+        assertEquals(1, result.permanentFailed)
+    }
+
+    @Test
+    fun `协调器 provider 只在首个真实工作项创建一次`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L, 2L))
+        var providerCalls = 0
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinatorProvider = {
+                providerCalls += 1
+                BatchWorkItemCoordinator {}
+            },
+        )
+
+        runner.run(BATCH_ID)
+
+        assertEquals(1, providerCalls)
+    }
+
+    @Test
+    fun `空批次和暂停批次不会创建协调器`() = runBlocking {
+        var providerCalls = 0
+        val provider = {
+            providerCalls += 1
+            BatchWorkItemCoordinator {}
+        }
+        val emptyRunner = BatchAnalysisRunner(
+            store = FakeBatchAnalysisStore(emptyList()),
+            coordinatorProvider = provider,
+        )
+        val pausedStore = FakeBatchAnalysisStore(items(1L)).apply {
+            forceBatchStatus(BatchAnalysisStatus.PAUSED)
+        }
+        val pausedRunner = BatchAnalysisRunner(
+            store = pausedStore,
+            coordinatorProvider = provider,
+        )
+
+        emptyRunner.run(BATCH_ID)
+        pausedRunner.run(BATCH_ID)
+
+        assertEquals(0, providerCalls)
+    }
+
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
         ids.map { id -> item(id, WorkItemStatus.PENDING) }
 
@@ -515,6 +596,8 @@ private class FakeBatchAnalysisStore(
     private var batchStatus = "QUEUED"
 
     var recoverCalls = 0
+        private set
+    var snapshotCalls = 0
         private set
     var finalStatus: BatchFinalStatus? = null
         private set
@@ -642,6 +725,7 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot {
         requireBatch(batchId)
+        snapshotCalls += 1
         fun count(status: WorkItemStatus): Int = items.values.count { it.status == status.name }
         return BatchAnalysisSnapshot(
             total = items.size,

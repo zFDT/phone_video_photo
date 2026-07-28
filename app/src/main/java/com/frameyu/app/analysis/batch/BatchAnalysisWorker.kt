@@ -221,9 +221,15 @@ class ImageBatchWorkItemCoordinator(
 /** 不依赖 Room、Bitmap 或 WorkManager 的可恢复批次执行核心。 */
 class BatchAnalysisRunner(
     private val store: BatchAnalysisStore,
-    private val coordinator: BatchWorkItemCoordinator,
+    private val coordinatorProvider: () -> BatchWorkItemCoordinator,
     private val pageSize: Int = DEFAULT_PAGE_SIZE,
 ) {
+    constructor(
+        store: BatchAnalysisStore,
+        coordinator: BatchWorkItemCoordinator,
+        pageSize: Int = DEFAULT_PAGE_SIZE,
+    ) : this(store, { coordinator }, pageSize)
+
     init {
         require(pageSize > 0) { "分页大小必须大于 0" }
     }
@@ -249,6 +255,8 @@ class BatchAnalysisRunner(
             return resultAfterRejectedTransition(batchId)
         }
 
+        var localSnapshot = store.snapshot(batchId)
+        var coordinator: BatchWorkItemCoordinator? = null
         var afterId = 0L
         var currentStage = ""
         var currentMediaId = -1L
@@ -265,7 +273,7 @@ class BatchAnalysisRunner(
 
                 currentStage = item.stage
                 currentMediaId = item.mediaAssetId
-                onProgress(store.snapshot(batchId).toProgress(item))
+                onProgress(localSnapshot.toProgress(item))
                 if (!store.markRunning(item.id)) {
                     return resultAfterRejectedTransition(
                         batchId,
@@ -273,9 +281,12 @@ class BatchAnalysisRunner(
                         currentMediaId = currentMediaId,
                     )
                 }
+                localSnapshot = localSnapshot.afterMarkRunning(item)
+                val itemCoordinator = coordinator
+                    ?: coordinatorProvider().also { coordinator = it }
 
                 try {
-                    coordinator.analyze(item)
+                    itemCoordinator.analyze(item)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (infrastructure: BatchAnalysisInfrastructureException) {
@@ -289,7 +300,8 @@ class BatchAnalysisRunner(
                             currentMediaId = currentMediaId,
                         )
                     }
-                    onProgress(store.snapshot(batchId).toProgress(item))
+                    localSnapshot = localSnapshot.afterFailure(retryable)
+                    onProgress(localSnapshot.toProgress(item))
                     continue
                 }
 
@@ -306,7 +318,8 @@ class BatchAnalysisRunner(
                         currentMediaId = currentMediaId,
                     )
                 }
-                onProgress(store.snapshot(batchId).toProgress(item))
+                localSnapshot = localSnapshot.afterCompletion()
+                onProgress(localSnapshot.toProgress(item))
             }
             afterId = page.last().id
         }
@@ -555,6 +568,36 @@ private fun BatchAnalysisSnapshot.toProgress(
     currentStage = item.stage,
     currentMediaId = item.mediaAssetId,
 )
+
+private fun BatchAnalysisSnapshot.afterMarkRunning(
+    item: AnalysisWorkItemEntity,
+): BatchAnalysisSnapshot = when (WorkItemStatus.valueOf(item.status)) {
+    WorkItemStatus.PENDING -> {
+        check(pending > 0) { "PENDING 工作项计数不能小于零" }
+        copy(pending = pending - 1, running = running + 1)
+    }
+    WorkItemStatus.RETRYABLE_FAILED -> {
+        check(retryableFailed > 0) { "RETRYABLE_FAILED 工作项计数不能小于零" }
+        copy(retryableFailed = retryableFailed - 1, running = running + 1)
+    }
+    else -> error("不可运行的工作项状态：${item.status}")
+}
+
+private fun BatchAnalysisSnapshot.afterCompletion(): BatchAnalysisSnapshot {
+    check(running > 0) { "RUNNING 工作项计数不能小于零" }
+    return copy(running = running - 1, completed = completed + 1)
+}
+
+private fun BatchAnalysisSnapshot.afterFailure(
+    retryable: Boolean,
+): BatchAnalysisSnapshot {
+    check(running > 0) { "RUNNING 工作项计数不能小于零" }
+    return if (retryable) {
+        copy(running = running - 1, retryableFailed = retryableFailed + 1)
+    } else {
+        copy(running = running - 1, permanentFailed = permanentFailed + 1)
+    }
+}
 
 private fun BatchAnalysisSnapshot.toResult(
     paused: Boolean = false,
