@@ -363,6 +363,42 @@ class BatchAnalysisRunnerTest {
         assertSame(databaseError, thrown)
     }
 
+    @Test
+    fun `基础设施异常提升到 Runner 边界且不写永久失败`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val infrastructureError = BatchAnalysisInfrastructureException(
+            "Room 读取失败",
+            IllegalStateException("数据库关闭"),
+        )
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { throw infrastructureError },
+        )
+
+        val thrown = runCatching { runner.run(BATCH_ID) }.exceptionOrNull()
+
+        assertSame(infrastructureError, thrown)
+        assertTrue(store.failedItemIds.isEmpty())
+        assertEquals(WorkItemStatus.RUNNING, store.status(1L))
+    }
+
+    @Test
+    fun `cause chain 中的 IOException 标记工作项为可重试`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {
+                throw IllegalStateException("解码失败", IOException("媒体读取失败"))
+            },
+        )
+
+        val result = runner.run(BATCH_ID)
+
+        assertEquals(1, result.retryableFailed)
+        assertEquals(0, result.permanentFailed)
+        assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(1L))
+    }
+
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
         ids.map { id -> item(id, WorkItemStatus.PENDING) }
 
@@ -493,6 +529,23 @@ private class FakeBatchAnalysisStore(
             },
             errorMessage = message,
         )
+        return true
+    }
+
+    override suspend fun failActiveExecution(batchId: Long, message: String): Boolean {
+        requireBatch(batchId)
+        if (batchStatus != "RUNNING") return false
+        items.replaceAll { _, item ->
+            if (item.status == WorkItemStatus.RUNNING.name) {
+                item.copy(
+                    status = WorkItemStatus.RETRYABLE_FAILED.name,
+                    errorMessage = message,
+                )
+            } else {
+                item
+            }
+        }
+        batchStatus = BatchFinalStatus.NEEDS_ATTENTION.name
         return true
     }
 

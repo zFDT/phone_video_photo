@@ -184,6 +184,21 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    /**
+     * Runner 级异常只收敛仍由当前执行器持有的 RUNNING 批次，不覆盖暂停、取消或新 attempt。
+     */
+    @Transaction
+    open suspend fun failActiveExecution(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ): Boolean {
+        val status = batchStatus(batchId)
+        if (status != "RUNNING") return false
+        recoverInterruptedItemsInternal(batchId, message, updatedAtMillis)
+        return finishRunningBatchInternal(batchId, "NEEDS_ATTENTION", updatedAtMillis) == 1
+    }
+
     @Query("SELECT status FROM analysis_batches WHERE id = :batchId")
     protected abstract suspend fun queryBatchStatus(batchId: Long): String?
 

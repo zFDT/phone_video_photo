@@ -2,6 +2,8 @@ package com.frameyu.app.analysis.batch
 
 import android.content.Context
 import android.content.pm.ServiceInfo
+import android.database.SQLException
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -90,6 +92,8 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean
 
+    suspend fun failActiveExecution(batchId: Long, message: String): Boolean
+
     suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot
 
     suspend fun finishBatch(batchId: Long, status: BatchFinalStatus): Boolean
@@ -133,6 +137,9 @@ class RoomBatchAnalysisStore(
     override suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean =
         dao.failItem(itemId, retryable, message, nowMillis())
 
+    override suspend fun failActiveExecution(batchId: Long, message: String): Boolean =
+        dao.failActiveExecution(batchId, message, nowMillis())
+
     override suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot {
         val counts = dao.batchCounts(batchId)
         return BatchAnalysisSnapshot(
@@ -172,10 +179,24 @@ class RoomBatchAnalysisStore(
 }
 
 class ImageBatchWorkItemCoordinator(
-    private val coordinator: ImageAnalysisCoordinator,
+    private val analyzeItem: suspend (AnalysisWorkItemEntity) -> Unit,
 ) : BatchWorkItemCoordinator {
+    constructor(coordinator: ImageAnalysisCoordinator) : this(coordinator::analyze)
+
     override suspend fun analyze(item: AnalysisWorkItemEntity) {
-        coordinator.analyze(item)
+        try {
+            analyzeItem(item)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (error.hasDatabaseCause()) {
+                throw BatchAnalysisInfrastructureException(
+                    "图片分析基础设施失败，工作项 id=${item.id}",
+                    error,
+                )
+            }
+            throw error
+        }
     }
 }
 
@@ -244,18 +265,11 @@ class BatchAnalysisRunner(
                     coordinator.analyze(item)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (error: IOException) {
-                    if (!store.failItem(item.id, retryable = true, error.failureMessage())) {
-                        return resultAfterRejectedTransition(
-                            batchId,
-                            currentStage = currentStage,
-                            currentMediaId = currentMediaId,
-                        )
-                    }
-                    onProgress(store.snapshot(batchId).toProgress(item))
-                    continue
+                } catch (infrastructure: BatchAnalysisInfrastructureException) {
+                    throw infrastructure
                 } catch (error: Exception) {
-                    if (!store.failItem(item.id, retryable = false, error.failureMessage())) {
+                    val retryable = error.hasIOExceptionCause()
+                    if (!store.failItem(item.id, retryable, error.failureMessage())) {
                         return resultAfterRejectedTransition(
                             batchId,
                             currentStage = currentStage,
@@ -329,6 +343,17 @@ class BatchAnalysisRunner(
         )
     }
 
+    internal suspend fun failActiveExecution(
+        batchId: Long,
+        message: String,
+    ): BatchAnalysisResult {
+        store.failActiveExecution(batchId, message)
+        return store.snapshot(batchId).toResult(
+            currentStage = "",
+            currentMediaId = -1L,
+        )
+    }
+
     private suspend fun controlledResult(
         batchId: Long,
         paused: Boolean = false,
@@ -392,19 +417,37 @@ class BatchAnalysisWorker(
         val batchId = inputData.getLong(KEY_BATCH_ID, -1L)
         if (batchId <= 0L) return Result.failure(errorData("缺少有效的批次 ID"))
 
-        return try {
-            setForeground(createForegroundInfo(batchId, BatchAnalysisProgress(0, 0, 0, "", -1L)))
-            val result = runner.run(batchId) { progress ->
+        setForeground(createForegroundInfo(batchId, BatchAnalysisProgress(0, 0, 0, "", -1L)))
+        val execution = BatchAnalysisExecution(
+            runBatch = runner::run,
+            failActiveExecution = runner::failActiveExecution,
+            logger = BatchExecutionLogger { failedBatchId, attempt, error, persistenceError ->
+                Log.e(
+                    TAG,
+                    "批量执行失败 batchId=$failedBatchId runAttemptCount=$attempt",
+                    error,
+                )
+                if (persistenceError != null) {
+                    Log.e(
+                        TAG,
+                        "批量失败状态持久化失败 batchId=$failedBatchId runAttemptCount=$attempt",
+                        persistenceError,
+                    )
+                }
+            },
+        )
+        return when (
+            val outcome = execution.execute(batchId, runAttemptCount) { progress ->
                 setProgress(progress.toData())
                 setForeground(createForegroundInfo(batchId, progress))
             }
-            Result.success(result.toData())
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: IOException) {
-            Result.retry()
-        } catch (error: Exception) {
-            Result.failure(errorData(error.failureMessage()))
+        ) {
+            BatchExecutionOutcome.Retry -> Result.retry()
+            is BatchExecutionOutcome.Success -> {
+                val output = outcome.result?.toData()
+                    ?: errorData(outcome.errorMessage ?: "批量分析执行失败")
+                Result.success(output)
+            }
         }
     }
 
@@ -450,6 +493,7 @@ class BatchAnalysisWorker(
         const val KEY_CURRENT_MEDIA_ID = "current_media_id"
         const val KEY_ERROR_MESSAGE = "error_message"
         const val CHANNEL_ID = "batch-analysis"
+        private const val TAG = "BatchAnalysisWorker"
         private const val NOTIFICATION_ID_BASE = 20_000
 
         internal fun notificationId(batchId: Long): Int {
@@ -521,3 +565,7 @@ private fun BatchAnalysisResult.toData(): Data = Data.Builder()
     .build()
 
 private fun Exception.failureMessage(): String = message ?: "批量分析失败"
+
+private fun Throwable.hasDatabaseCause(): Boolean =
+    generateSequence(this) { current -> current.cause }
+        .any { current -> current is SQLException }
