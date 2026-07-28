@@ -36,6 +36,7 @@ internal class BatchAnalysisExecution(
     private val runBatch: suspend (
         batchId: Long,
         onProgress: suspend (BatchAnalysisProgress) -> Unit,
+        afterClaim: suspend () -> Unit,
     ) -> BatchAnalysisResult,
     private val failActiveExecution: suspend (
         batchId: Long,
@@ -50,8 +51,7 @@ internal class BatchAnalysisExecution(
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
     ): BatchExecutionOutcome {
         return try {
-            beforeRun()
-            BatchExecutionOutcome.Success(runBatch(batchId, onProgress))
+            BatchExecutionOutcome.Success(runBatch(batchId, onProgress, beforeRun))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {

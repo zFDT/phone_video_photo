@@ -41,6 +41,11 @@ enum class BatchFinalStatus {
     NEEDS_ATTENTION,
 }
 
+data class BatchAnalysisControlState(
+    val status: BatchAnalysisStatus,
+    val revision: Long,
+)
+
 data class BatchAnalysisSnapshot(
     val total: Int,
     val completed: Int,
@@ -94,7 +99,9 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun batchStatus(batchId: Long): BatchAnalysisStatus
 
-    suspend fun markBatchRunning(batchId: Long): Boolean
+    suspend fun batchControlState(batchId: Long): BatchAnalysisControlState
+
+    suspend fun markBatchRunning(batchId: Long, expectedRevision: Long): Boolean
 
     suspend fun nextRunnableItems(
         batchId: Long,
@@ -131,8 +138,16 @@ class RoomBatchAnalysisStore(
     override suspend fun batchStatus(batchId: Long): BatchAnalysisStatus =
         BatchAnalysisStatus.fromPersisted(dao.batchStatus(batchId))
 
-    override suspend fun markBatchRunning(batchId: Long): Boolean =
-        dao.markBatchRunning(batchId, nowMillis())
+    override suspend fun batchControlState(batchId: Long): BatchAnalysisControlState {
+        val control = dao.batchControlState(batchId)
+        return BatchAnalysisControlState(
+            status = BatchAnalysisStatus.fromPersisted(control.status),
+            revision = control.updatedAtMillis,
+        )
+    }
+
+    override suspend fun markBatchRunning(batchId: Long, expectedRevision: Long): Boolean =
+        dao.markBatchRunning(batchId, nowMillis(), expectedRevision)
 
     override suspend fun nextRunnableItems(
         batchId: Long,
@@ -237,9 +252,16 @@ class BatchAnalysisRunner(
     suspend fun run(
         batchId: Long,
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
+    ): BatchAnalysisResult = run(batchId, onProgress, afterClaim = {})
+
+    internal suspend fun run(
+        batchId: Long,
+        onProgress: suspend (BatchAnalysisProgress) -> Unit,
+        afterClaim: suspend () -> Unit,
     ): BatchAnalysisResult {
         require(batchId > 0L) { "批次 ID 必须大于 0" }
-        when (store.batchStatus(batchId)) {
+        val initialControl = store.batchControlState(batchId)
+        when (initialControl.status) {
             BatchAnalysisStatus.QUEUED,
             BatchAnalysisStatus.RUNNING,
             -> Unit
@@ -251,9 +273,10 @@ class BatchAnalysisRunner(
         }
 
         store.recoverInterrupted(batchId)
-        if (!store.markBatchRunning(batchId)) {
+        if (!store.markBatchRunning(batchId, initialControl.revision)) {
             return resultAfterRejectedTransition(batchId)
         }
+        afterClaim()
 
         var localSnapshot = store.snapshot(batchId)
         var coordinator: BatchWorkItemCoordinator? = null

@@ -74,7 +74,10 @@ class BatchAnalysisExecutionTest {
         val original = IllegalStateException("Runner 失败")
         val persistence = IllegalStateException("数据库只读")
         val execution = BatchAnalysisExecution(
-            runBatch = { _, _ -> throw original },
+            runBatch = { _, _, afterClaim ->
+                afterClaim()
+                throw original
+            },
             failActiveExecution = { _, _ -> throw persistence },
             logger = BatchExecutionLogger { batchId, runAttemptCount, error, persistenceError ->
                 logs += ExecutionFailureLog(batchId, runAttemptCount, error, persistenceError)
@@ -216,7 +219,10 @@ class BatchAnalysisExecutionTest {
         runBatch: suspend (Long) -> BatchAnalysisResult,
         failActive: suspend (Long, String) -> BatchAnalysisResult = { _, _ -> result() },
     ) = BatchAnalysisExecution(
-        runBatch = { batchId, _ -> runBatch(batchId) },
+        runBatch = { batchId, _, afterClaim ->
+            afterClaim()
+            runBatch(batchId)
+        },
         failActiveExecution = failActive,
         logger = BatchExecutionLogger { _, _, _, _ -> },
     )

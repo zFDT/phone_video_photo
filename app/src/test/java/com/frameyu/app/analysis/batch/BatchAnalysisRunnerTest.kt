@@ -568,8 +568,9 @@ class BatchAnalysisRunnerTest {
     }
 
     @Test
-    fun `beforeRun 最终失败会收敛尚未启动的 QUEUED 批次`() = runBlocking {
+    fun `首次前台失败在 claim 后收敛原 QUEUED 批次`() = runBlocking {
         val store = FakeBatchAnalysisStore(items(1L))
+        var statusDuringForeground: BatchAnalysisStatus? = null
         val runner = BatchAnalysisRunner(
             store = store,
             coordinator = BatchWorkItemCoordinator {},
@@ -583,11 +584,15 @@ class BatchAnalysisRunnerTest {
         val outcome = execution.execute(
             batchId = BATCH_ID,
             runAttemptCount = 2,
-            beforeRun = { throw IllegalStateException("首次前台任务启动失败") },
+            beforeRun = {
+                statusDuringForeground = store.batchStatus(BATCH_ID)
+                throw IllegalStateException("首次前台任务启动失败")
+            },
         )
 
         assertTrue(outcome is BatchExecutionOutcome.Success)
         val result = (outcome as BatchExecutionOutcome.Success).result
+        assertEquals(BatchAnalysisStatus.RUNNING, statusDuringForeground)
         assertEquals(1, result?.retryableFailed)
         assertEquals(BatchAnalysisStatus.NEEDS_ATTENTION, store.batchStatus(BATCH_ID))
         assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(1L))
@@ -634,6 +639,69 @@ class BatchAnalysisRunnerTest {
         assertTrue(thrown is IllegalStateException)
     }
 
+    @Test
+    fun `旧 Worker claim 后暂停恢复再前台失败不会阻断新 Worker`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+        val execution = BatchAnalysisExecution(
+            runBatch = runner::run,
+            failActiveExecution = runner::failActiveExecution,
+            logger = BatchExecutionLogger { _, _, _, _ -> },
+        )
+
+        val oldOutcome = execution.execute(
+            batchId = BATCH_ID,
+            runAttemptCount = 2,
+            beforeRun = {
+                store.pauseBatch(BATCH_ID)
+                store.resumeBatch(BATCH_ID)
+                throw IllegalStateException("旧 Worker 前台化失败")
+            },
+        )
+        val newOutcome = execution.execute(
+            batchId = BATCH_ID,
+            runAttemptCount = 0,
+        )
+
+        assertTrue(oldOutcome is BatchExecutionOutcome.Success)
+        assertTrue(newOutcome is BatchExecutionOutcome.Success)
+        assertEquals(
+            1,
+            (newOutcome as BatchExecutionOutcome.Success).result?.completed,
+        )
+        assertEquals(BatchAnalysisStatus.COMPLETED, store.batchStatus(BATCH_ID))
+    }
+
+    @Test
+    fun `旧 Worker 跨 pause resume 的陈旧 claim 不会抢占新 attempt`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val analyzed = mutableListOf<Long>()
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { item -> analyzed += item.id },
+        )
+        store.beforeMarkBatchRunning = {
+            store.beforeMarkBatchRunning = null
+            store.pauseBatch(BATCH_ID)
+            store.resumeBatch(BATCH_ID)
+        }
+
+        val oldResult = runner.run(BATCH_ID)
+
+        assertEquals(0, oldResult.completed)
+        assertTrue(analyzed.isEmpty())
+        assertEquals(BatchAnalysisStatus.QUEUED, store.batchStatus(BATCH_ID))
+
+        val newResult = runner.run(BATCH_ID)
+
+        assertEquals(1, newResult.completed)
+        assertEquals(listOf(1L), analyzed)
+        assertEquals(BatchAnalysisStatus.COMPLETED, store.batchStatus(BATCH_ID))
+    }
+
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
         ids.map { id -> item(id, WorkItemStatus.PENDING) }
 
@@ -661,6 +729,7 @@ private class FakeBatchAnalysisStore(
 ) : BatchAnalysisStore {
     private val items = items.associateByTo(linkedMapOf(), AnalysisWorkItemEntity::id)
     private var batchStatus = "QUEUED"
+    private var batchRevision = 0L
 
     var recoverCalls = 0
         private set
@@ -683,7 +752,7 @@ private class FakeBatchAnalysisStore(
     }
 
     fun forceBatchStatus(status: BatchAnalysisStatus) {
-        batchStatus = status.name
+        updateBatchStatus(status.name)
     }
 
     override suspend fun recoverInterrupted(batchId: Long) {
@@ -703,11 +772,23 @@ private class FakeBatchAnalysisStore(
         return BatchAnalysisStatus.fromPersisted(batchStatus)
     }
 
-    override suspend fun markBatchRunning(batchId: Long): Boolean {
+    override suspend fun batchControlState(batchId: Long): BatchAnalysisControlState {
+        requireBatch(batchId)
+        return BatchAnalysisControlState(
+            status = BatchAnalysisStatus.fromPersisted(batchStatus),
+            revision = batchRevision,
+        )
+    }
+
+    override suspend fun markBatchRunning(
+        batchId: Long,
+        expectedRevision: Long,
+    ): Boolean {
         requireBatch(batchId)
         beforeMarkBatchRunning?.invoke()
-        if (batchStatus in setOf("PAUSED", "CANCELLED")) return false
-        batchStatus = "RUNNING"
+        if (batchRevision != expectedRevision) return false
+        if (batchStatus !in setOf("QUEUED", "RUNNING")) return false
+        updateBatchStatus("RUNNING")
         return true
     }
 
@@ -777,7 +858,7 @@ private class FakeBatchAnalysisStore(
     override suspend fun failActiveExecution(batchId: Long, message: String): Boolean {
         requireBatch(batchId)
         failActiveExecutionResult?.let { return it }
-        if (batchStatus !in setOf("QUEUED", "RUNNING")) return false
+        if (batchStatus != "RUNNING") return false
         items.replaceAll { _, item ->
             if (item.status in setOf(
                     WorkItemStatus.PENDING.name,
@@ -793,7 +874,7 @@ private class FakeBatchAnalysisStore(
                 item
             }
         }
-        batchStatus = BatchFinalStatus.NEEDS_ATTENTION.name
+        updateBatchStatus(BatchFinalStatus.NEEDS_ATTENTION.name)
         return true
     }
 
@@ -818,7 +899,7 @@ private class FakeBatchAnalysisStore(
         beforeFinishBatch?.invoke()
         if (batchStatus != "RUNNING") return false
         finalStatus = status
-        batchStatus = status.name
+        updateBatchStatus(status.name)
         return true
     }
 
@@ -829,7 +910,7 @@ private class FakeBatchAnalysisStore(
             BatchAnalysisStatus.QUEUED.name,
             BatchAnalysisStatus.RUNNING.name,
         ))
-        batchStatus = "PAUSED"
+        updateBatchStatus("PAUSED")
         items.replaceAll { _, item ->
             if (item.status in setOf(
                     WorkItemStatus.PENDING.name,
@@ -847,7 +928,7 @@ private class FakeBatchAnalysisStore(
         requireBatch(batchId)
         if (batchStatus == BatchAnalysisStatus.QUEUED.name) return
         check(batchStatus == BatchAnalysisStatus.PAUSED.name)
-        batchStatus = "QUEUED"
+        updateBatchStatus("QUEUED")
         items.replaceAll { _, item ->
             when (item.status) {
                 WorkItemStatus.PAUSED.name -> item.copy(status = WorkItemStatus.PENDING.name)
@@ -866,7 +947,7 @@ private class FakeBatchAnalysisStore(
             BatchAnalysisStatus.PAUSED.name,
             BatchAnalysisStatus.NEEDS_ATTENTION.name,
         ))
-        batchStatus = "CANCELLED"
+        updateBatchStatus("CANCELLED")
         items.replaceAll { _, item ->
             if (item.status in setOf(
                     WorkItemStatus.PENDING.name,
@@ -891,7 +972,7 @@ private class FakeBatchAnalysisStore(
                 WorkItemStatus.PERMANENT_FAILED.name,
             )
         })
-        batchStatus = "QUEUED"
+        updateBatchStatus("QUEUED")
         items.replaceAll { _, item ->
             if (item.status in setOf(
                     WorkItemStatus.RETRYABLE_FAILED.name,
@@ -927,7 +1008,7 @@ private class FakeBatchAnalysisStore(
                 item
             }
         }
-        batchStatus = BatchAnalysisStatus.NEEDS_ATTENTION.name
+        updateBatchStatus(BatchAnalysisStatus.NEEDS_ATTENTION.name)
     }
 
     override suspend fun reconcilableBatchIds(): List<Long> =
@@ -949,6 +1030,11 @@ private class FakeBatchAnalysisStore(
 
     private fun requireBatch(batchId: Long) {
         require(batchId == BATCH_ID)
+    }
+
+    private fun updateBatchStatus(status: String) {
+        batchStatus = status
+        batchRevision += 1L
     }
 
     private companion object {

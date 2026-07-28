@@ -200,9 +200,7 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
-    /**
-     * Runner 级异常收敛当前 QUEUED 或 RUNNING 批次的全部可恢复项，不覆盖终态结果。
-     */
+    /** Runner 级异常只收敛当前已由 Worker claim 的 RUNNING 批次，不覆盖终态结果。 */
     @Transaction
     open suspend fun failActiveExecution(
         batchId: Long,
@@ -210,14 +208,9 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Boolean {
         val status = batchStatus(batchId)
-        if (status !in setOf("QUEUED", "RUNNING")) return false
+        if (status != "RUNNING") return false
         failRecoverableItemsInternal(batchId, message, updatedAtMillis)
-        return updateBatchStatusFromInternal(
-            batchId = batchId,
-            status = "NEEDS_ATTENTION",
-            updatedAtMillis = updatedAtMillis,
-            sourceStatuses = listOf("QUEUED", "RUNNING"),
-        ) == 1
+        return finishRunningBatchInternal(batchId, "NEEDS_ATTENTION", updatedAtMillis) == 1
     }
 
     @Query("SELECT status FROM analysis_batches WHERE id = :batchId")
@@ -226,6 +219,20 @@ abstract class BatchAnalysisDao {
     suspend fun batchStatus(batchId: Long): String {
         require(batchId > 0L) { "批次 ID 必须大于 0" }
         return requireNotNull(queryBatchStatus(batchId)) { "批次不存在：$batchId" }
+    }
+
+    @Query(
+        """
+        SELECT status, updated_at_millis
+        FROM analysis_batches
+        WHERE id = :batchId
+        """
+    )
+    protected abstract suspend fun queryBatchControlState(batchId: Long): BatchControlState?
+
+    suspend fun batchControlState(batchId: Long): BatchControlState {
+        require(batchId > 0L) { "批次 ID 必须大于 0" }
+        return requireNotNull(queryBatchControlState(batchId)) { "批次不存在：$batchId" }
     }
 
     @Transaction
@@ -242,7 +249,7 @@ abstract class BatchAnalysisDao {
         """
         UPDATE analysis_batches
         SET status = :status,
-            updated_at_millis = :updatedAtMillis
+            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
         WHERE id = :batchId
           AND status IN (:sourceStatuses)
         """
@@ -258,21 +265,23 @@ abstract class BatchAnalysisDao {
         """
         UPDATE analysis_batches
         SET status = 'RUNNING',
-            updated_at_millis = :updatedAtMillis
+            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
         WHERE id = :batchId
           AND status IN ('QUEUED', 'RUNNING')
+          AND updated_at_millis = :expectedRevision
         """
     )
     protected abstract suspend fun markBatchRunningInternal(
         batchId: Long,
         updatedAtMillis: Long,
+        expectedRevision: Long,
     ): Int
 
     @Query(
         """
         UPDATE analysis_batches
         SET status = :status,
-            updated_at_millis = :updatedAtMillis
+            updated_at_millis = MAX(updated_at_millis + 1, :updatedAtMillis)
         WHERE id = :batchId
           AND status = 'RUNNING'
         """
@@ -283,11 +292,22 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
-    /** 批次不存在时抛错；控制态已变化时返回 false。 */
+    /** 兼容旧调用方，事务内读取当前修订号后立即 claim。 */
     @Transaction
     open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long): Boolean {
+        val control = batchControlState(batchId)
+        return markBatchRunningInternal(batchId, updatedAtMillis, control.updatedAtMillis) == 1
+    }
+
+    /** 批次不存在时抛错；控制态或修订号已变化时返回 false。 */
+    @Transaction
+    open suspend fun markBatchRunning(
+        batchId: Long,
+        updatedAtMillis: Long,
+        expectedRevision: Long,
+    ): Boolean {
         batchStatus(batchId)
-        return markBatchRunningInternal(batchId, updatedAtMillis) == 1
+        return markBatchRunningInternal(batchId, updatedAtMillis, expectedRevision) == 1
     }
 
     @Query(
@@ -834,4 +854,11 @@ data class BatchAnalysisCounts(
     val running: Int,
     val paused: Int,
     val cancelled: Int,
+)
+
+/** 批次控制态及其无迁移的乐观锁修订号。 */
+data class BatchControlState(
+    val status: String,
+    @ColumnInfo(name = "updated_at_millis")
+    val updatedAtMillis: Long,
 )

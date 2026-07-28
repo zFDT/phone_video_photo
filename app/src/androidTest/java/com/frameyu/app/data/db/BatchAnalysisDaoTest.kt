@@ -418,6 +418,79 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun resumedBatchRejectsFailureFromWorkerThatClaimedBeforePause() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(89L, 1L, "QUALITY")),
+            )
+            assertTrue(dao.markBatchRunning(batchId, updatedAtMillis = 60L))
+
+            dao.pauseBatch(batchId, updatedAtMillis = 61L)
+            dao.resumeBatch(batchId, "恢复新 attempt", updatedAtMillis = 62L)
+
+            assertFalse(
+                dao.failActiveExecution(
+                    batchId,
+                    message = "旧 Worker 前台化失败",
+                    updatedAtMillis = 63L,
+                ),
+            )
+            assertEquals("QUEUED", dao.batchStatus(batchId))
+
+            assertTrue(dao.markBatchRunning(batchId, updatedAtMillis = 64L))
+            assertTrue(dao.markRunning(89L, updatedAtMillis = 65L))
+            assertTrue(dao.completeItem(89L, updatedAtMillis = 66L))
+            assertTrue(dao.finishBatch(batchId, "COMPLETED", updatedAtMillis = 67L))
+            assertEquals("COMPLETED", dao.batchStatus(batchId))
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun staleClaimCannotCrossPauseAndResumeRevision() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(90L, 1L, "QUALITY")),
+            )
+            val staleControl = dao.batchControlState(batchId)
+
+            dao.pauseBatch(batchId, updatedAtMillis = 1L)
+            dao.resumeBatch(batchId, "恢复新 attempt", updatedAtMillis = 1L)
+
+            assertFalse(
+                dao.markBatchRunning(
+                    batchId = batchId,
+                    updatedAtMillis = 1L,
+                    expectedRevision = staleControl.updatedAtMillis,
+                ),
+            )
+            assertEquals("QUEUED", dao.batchStatus(batchId))
+
+            val currentControl = dao.batchControlState(batchId)
+            assertTrue(currentControl.updatedAtMillis > staleControl.updatedAtMillis)
+            assertTrue(
+                dao.markBatchRunning(
+                    batchId = batchId,
+                    updatedAtMillis = 1L,
+                    expectedRevision = currentControl.updatedAtMillis,
+                ),
+            )
+            assertEquals("RUNNING", dao.batchStatus(batchId))
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun reconcilableBatchesAndEnqueueFailureStateArePersistent() = runBlocking {
         val database = createDatabase()
         try {
