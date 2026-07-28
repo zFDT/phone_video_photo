@@ -18,10 +18,22 @@ import com.frameyu.app.data.db.BatchAnalysisDao
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 
-enum class BatchControlState {
-    RUNNABLE,
+enum class BatchAnalysisStatus {
+    QUEUED,
+    RUNNING,
     PAUSED,
     CANCELLED,
+    COMPLETED,
+    NEEDS_ATTENTION,
+    ;
+
+    companion object {
+        fun fromPersisted(rawStatus: String): BatchAnalysisStatus = try {
+            valueOf(rawStatus)
+        } catch (error: IllegalArgumentException) {
+            throw IllegalStateException("未知批次状态：$rawStatus", error)
+        }
+    }
 }
 
 enum class BatchFinalStatus {
@@ -76,7 +88,7 @@ interface BatchAnalysisLifecycleStore {
 interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
     suspend fun recoverInterrupted(batchId: Long)
 
-    suspend fun controlState(batchId: Long): BatchControlState
+    suspend fun batchStatus(batchId: Long): BatchAnalysisStatus
 
     suspend fun markBatchRunning(batchId: Long): Boolean
 
@@ -112,12 +124,8 @@ class RoomBatchAnalysisStore(
         dao.recoverInterruptedItems(batchId, INTERRUPTED_MESSAGE, nowMillis())
     }
 
-    override suspend fun controlState(batchId: Long): BatchControlState =
-        when (dao.batchStatus(batchId)) {
-            "PAUSED" -> BatchControlState.PAUSED
-            "CANCELLED" -> BatchControlState.CANCELLED
-            else -> BatchControlState.RUNNABLE
-        }
+    override suspend fun batchStatus(batchId: Long): BatchAnalysisStatus =
+        BatchAnalysisStatus.fromPersisted(dao.batchStatus(batchId))
 
     override suspend fun markBatchRunning(batchId: Long): Boolean =
         dao.markBatchRunning(batchId, nowMillis())
@@ -215,10 +223,15 @@ class BatchAnalysisRunner(
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
     ): BatchAnalysisResult {
         require(batchId > 0L) { "批次 ID 必须大于 0" }
-        when (store.controlState(batchId)) {
-            BatchControlState.PAUSED -> return controlledResult(batchId, paused = true)
-            BatchControlState.CANCELLED -> return controlledResult(batchId, cancelled = true)
-            BatchControlState.RUNNABLE -> Unit
+        when (store.batchStatus(batchId)) {
+            BatchAnalysisStatus.QUEUED,
+            BatchAnalysisStatus.RUNNING,
+            -> Unit
+            BatchAnalysisStatus.PAUSED -> return controlledResult(batchId, paused = true)
+            BatchAnalysisStatus.CANCELLED -> return controlledResult(batchId, cancelled = true)
+            BatchAnalysisStatus.COMPLETED,
+            BatchAnalysisStatus.NEEDS_ATTENTION,
+            -> return controlledResult(batchId)
         }
 
         store.recoverInterrupted(batchId)
@@ -234,21 +247,11 @@ class BatchAnalysisRunner(
             if (page.isEmpty()) break
 
             for (item in page) {
-                when (store.controlState(batchId)) {
-                    BatchControlState.PAUSED -> return controlledResult(
-                        batchId,
-                        paused = true,
-                        currentStage = currentStage,
-                        currentMediaId = currentMediaId,
-                    )
-                    BatchControlState.CANCELLED -> return controlledResult(
-                        batchId,
-                        cancelled = true,
-                        currentStage = currentStage,
-                        currentMediaId = currentMediaId,
-                    )
-                    BatchControlState.RUNNABLE -> Unit
-                }
+                controlledResultForNonRunningState(
+                    batchId,
+                    currentStage,
+                    currentMediaId,
+                )?.let { return it }
 
                 currentStage = item.stage
                 currentMediaId = item.mediaAssetId
@@ -280,21 +283,11 @@ class BatchAnalysisRunner(
                     continue
                 }
 
-                when (store.controlState(batchId)) {
-                    BatchControlState.PAUSED -> return controlledResult(
-                        batchId,
-                        paused = true,
-                        currentStage = currentStage,
-                        currentMediaId = currentMediaId,
-                    )
-                    BatchControlState.CANCELLED -> return controlledResult(
-                        batchId,
-                        cancelled = true,
-                        currentStage = currentStage,
-                        currentMediaId = currentMediaId,
-                    )
-                    BatchControlState.RUNNABLE -> Unit
-                }
+                controlledResultForNonRunningState(
+                    batchId,
+                    currentStage,
+                    currentMediaId,
+                )?.let { return it }
 
                 if (!store.completeItem(item.id)) {
                     return resultAfterRejectedTransition(
@@ -308,24 +301,14 @@ class BatchAnalysisRunner(
             afterId = page.last().id
         }
 
-        when (store.controlState(batchId)) {
-            BatchControlState.PAUSED -> return controlledResult(
-                batchId,
-                paused = true,
-                currentStage = currentStage,
-                currentMediaId = currentMediaId,
-            )
-            BatchControlState.CANCELLED -> return controlledResult(
-                batchId,
-                cancelled = true,
-                currentStage = currentStage,
-                currentMediaId = currentMediaId,
-            )
-            BatchControlState.RUNNABLE -> Unit
-        }
+        controlledResultForNonRunningState(
+            batchId,
+            currentStage,
+            currentMediaId,
+        )?.let { return it }
 
         val snapshot = store.snapshot(batchId)
-        val finalStatus = if (snapshot.retryableFailed > 0) {
+        val finalStatus = if (snapshot.failed > 0) {
             BatchFinalStatus.NEEDS_ATTENTION
         } else {
             BatchFinalStatus.COMPLETED
@@ -368,27 +351,61 @@ class BatchAnalysisRunner(
     )
 
     /**
-     * 条件转换未命中只表示控制态发生竞态；RUNNABLE 表示旧执行器已被新调度取代。
+     * 条件转换未命中后，只有 QUEUED 才表示旧执行器已被新调度取代。
      * 数据库异常仍由 Store 原样抛出。
      */
     private suspend fun resultAfterRejectedTransition(
         batchId: Long,
         currentStage: String = "",
         currentMediaId: Long = -1L,
-    ): BatchAnalysisResult = when (store.controlState(batchId)) {
-        BatchControlState.PAUSED -> controlledResult(
+    ): BatchAnalysisResult = when (store.batchStatus(batchId)) {
+        BatchAnalysisStatus.PAUSED -> controlledResult(
             batchId,
             paused = true,
             currentStage = currentStage,
             currentMediaId = currentMediaId,
         )
-        BatchControlState.CANCELLED -> controlledResult(
+        BatchAnalysisStatus.CANCELLED -> controlledResult(
             batchId,
             cancelled = true,
             currentStage = currentStage,
             currentMediaId = currentMediaId,
         )
-        BatchControlState.RUNNABLE -> controlledResult(
+        BatchAnalysisStatus.QUEUED,
+        BatchAnalysisStatus.COMPLETED,
+        BatchAnalysisStatus.NEEDS_ATTENTION,
+        -> controlledResult(
+            batchId,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+        BatchAnalysisStatus.RUNNING -> error(
+            "批次 id=$batchId 仍为 RUNNING，但受保护状态转换未命中",
+        )
+    }
+
+    private suspend fun controlledResultForNonRunningState(
+        batchId: Long,
+        currentStage: String,
+        currentMediaId: Long,
+    ): BatchAnalysisResult? = when (store.batchStatus(batchId)) {
+        BatchAnalysisStatus.RUNNING -> null
+        BatchAnalysisStatus.PAUSED -> controlledResult(
+            batchId,
+            paused = true,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+        BatchAnalysisStatus.CANCELLED -> controlledResult(
+            batchId,
+            cancelled = true,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+        BatchAnalysisStatus.QUEUED,
+        BatchAnalysisStatus.COMPLETED,
+        BatchAnalysisStatus.NEEDS_ATTENTION,
+        -> controlledResult(
             batchId,
             currentStage = currentStage,
             currentMediaId = currentMediaId,

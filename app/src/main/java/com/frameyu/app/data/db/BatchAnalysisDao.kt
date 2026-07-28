@@ -223,12 +223,14 @@ abstract class BatchAnalysisDao {
         SET status = :status,
             updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
+          AND status IN (:sourceStatuses)
         """
     )
-    protected abstract suspend fun updateBatchStatusInternal(
+    protected abstract suspend fun updateBatchStatusFromInternal(
         batchId: Long,
         status: String,
         updatedAtMillis: Long,
+        sourceStatuses: List<String>,
     ): Int
 
     @Query(
@@ -237,7 +239,7 @@ abstract class BatchAnalysisDao {
         SET status = 'RUNNING',
             updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
-          AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'NEEDS_ATTENTION')
+          AND status IN ('QUEUED', 'RUNNING')
         """
     )
     protected abstract suspend fun markBatchRunningInternal(
@@ -311,9 +313,18 @@ abstract class BatchAnalysisDao {
 
     @Transaction
     open suspend fun pauseBatch(batchId: Long, updatedAtMillis: Long) {
-        batchStatus(batchId)
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, "PAUSED", updatedAtMillis),
+        val status = batchStatus(batchId)
+        if (status == "PAUSED") return
+        check(status in setOf("QUEUED", "RUNNING")) {
+            "批次 id=$batchId 当前状态不允许暂停：$status"
+        }
+        checkBatchTransitionUpdated(
+            updateBatchStatusFromInternal(
+                batchId,
+                "PAUSED",
+                updatedAtMillis,
+                listOf("QUEUED", "RUNNING"),
+            ),
             batchId,
             "暂停",
         )
@@ -348,10 +359,19 @@ abstract class BatchAnalysisDao {
         interruptedMessage: String,
         updatedAtMillis: Long,
     ) {
-        batchStatus(batchId)
+        val status = batchStatus(batchId)
+        if (status == "QUEUED") return
+        check(status == "PAUSED") {
+            "批次 id=$batchId 当前状态不允许恢复：$status"
+        }
         resumeItems(batchId, interruptedMessage, updatedAtMillis)
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, "QUEUED", updatedAtMillis),
+        checkBatchTransitionUpdated(
+            updateBatchStatusFromInternal(
+                batchId,
+                "QUEUED",
+                updatedAtMillis,
+                listOf("PAUSED"),
+            ),
             batchId,
             "恢复",
         )
@@ -373,9 +393,18 @@ abstract class BatchAnalysisDao {
 
     @Transaction
     open suspend fun cancelBatch(batchId: Long, updatedAtMillis: Long) {
-        batchStatus(batchId)
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, "CANCELLED", updatedAtMillis),
+        val status = batchStatus(batchId)
+        if (status == "CANCELLED") return
+        check(status in setOf("QUEUED", "RUNNING", "PAUSED", "NEEDS_ATTENTION")) {
+            "批次 id=$batchId 当前状态不允许取消：$status"
+        }
+        checkBatchTransitionUpdated(
+            updateBatchStatusFromInternal(
+                batchId,
+                "CANCELLED",
+                updatedAtMillis,
+                listOf("QUEUED", "RUNNING", "PAUSED", "NEEDS_ATTENTION"),
+            ),
             batchId,
             "取消",
         )
@@ -399,10 +428,22 @@ abstract class BatchAnalysisDao {
 
     @Transaction
     open suspend fun retryFailures(batchId: Long, updatedAtMillis: Long) {
-        batchStatus(batchId)
+        val status = batchStatus(batchId)
+        check(status == "NEEDS_ATTENTION") {
+            "批次 id=$batchId 当前状态不允许重试失败项：$status"
+        }
+        val counts = queryBatchCounts(batchId)
+        check(counts.retryableFailed + counts.permanentFailed > 0) {
+            "批次 id=$batchId 没有可重试的失败项"
+        }
         resetFailedItems(batchId, updatedAtMillis)
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, "QUEUED", updatedAtMillis),
+        checkBatchTransitionUpdated(
+            updateBatchStatusFromInternal(
+                batchId,
+                "QUEUED",
+                updatedAtMillis,
+                listOf("NEEDS_ATTENTION"),
+            ),
             batchId,
             "重试失败项",
         )
@@ -704,9 +745,9 @@ abstract class BatchAnalysisDao {
         check(workItemExists(itemId)) { "工作项不存在：$itemId" }
     }
 
-    private fun checkBatchUpdated(updatedRows: Int, batchId: Long, operation: String) {
+    private fun checkBatchTransitionUpdated(updatedRows: Int, batchId: Long, operation: String) {
         check(updatedRows == 1) {
-            "无法对批次 id=$batchId 执行$operation：批次不存在"
+            "无法对批次 id=$batchId 执行$operation：来源状态已变化"
         }
     }
 }

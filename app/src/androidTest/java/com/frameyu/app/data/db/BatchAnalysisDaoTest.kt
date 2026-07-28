@@ -258,6 +258,58 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun batchLifecycleUsesLegalSourcesAndKeepsIdempotentControlOperations() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val pausedBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(41L, 1L, "QUALITY")),
+            )
+            dao.pauseBatch(pausedBatchId, updatedAtMillis = 10L)
+            dao.pauseBatch(pausedBatchId, updatedAtMillis = 11L)
+            dao.resumeBatch(pausedBatchId, "恢复中断", updatedAtMillis = 12L)
+            dao.resumeBatch(pausedBatchId, "恢复中断", updatedAtMillis = 13L)
+            assertEquals("QUEUED", dao.batchStatus(pausedBatchId))
+
+            val cancelledBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(42L, 2L, "QUALITY")),
+            )
+            dao.cancelBatch(cancelledBatchId, updatedAtMillis = 20L)
+            dao.cancelBatch(cancelledBatchId, updatedAtMillis = 21L)
+            assertIllegalState {
+                dao.resumeBatch(cancelledBatchId, "不得复活", updatedAtMillis = 22L)
+            }
+
+            val completedBatchId = dao.createBatch(
+                batch = batch().copy(status = "COMPLETED"),
+                items = listOf(workItem(43L, 1L, "QUALITY", status = "COMPLETED")),
+            )
+            assertIllegalState { dao.pauseBatch(completedBatchId, updatedAtMillis = 30L) }
+            assertIllegalState { dao.cancelBatch(completedBatchId, updatedAtMillis = 31L) }
+
+            val attentionBatchId = dao.createBatch(
+                batch = batch().copy(status = "NEEDS_ATTENTION"),
+                items = listOf(
+                    workItem(44L, 1L, "QUALITY", status = "PERMANENT_FAILED"),
+                    workItem(45L, 2L, "QUALITY", status = "COMPLETED"),
+                ),
+            )
+            dao.retryFailures(attentionBatchId, updatedAtMillis = 40L)
+            assertEquals("QUEUED", dao.batchStatus(attentionBatchId))
+            assertEquals(
+                listOf(44L),
+                dao.nextRunnableItems(attentionBatchId, limit = 10).map { it.id },
+            )
+            assertIllegalState { dao.retryFailures(attentionBatchId, updatedAtMillis = 41L) }
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun classificationAndDetectionWritesReplaceCompleteNaturalKeySets() = runBlocking {
         val database = createDatabase()
         try {
@@ -509,7 +561,7 @@ class BatchAnalysisDaoTest {
     }
 
     private fun batch() = AnalysisBatchEntity(
-        status = "PENDING",
+        status = "QUEUED",
         createdAtMillis = 1L,
         updatedAtMillis = 1L,
     )

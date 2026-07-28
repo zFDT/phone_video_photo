@@ -62,7 +62,7 @@ class BatchAnalysisRunnerTest {
     }
 
     @Test
-    fun `第二次运行只重试 retryable 工作项`() = runBlocking {
+    fun `NEEDS_ATTENTION 不自动重试且显式重试会重置全部失败项`() = runBlocking {
         val store = FakeBatchAnalysisStore(items(1L, 2L))
         val attempts = mutableMapOf<Long, Int>()
         val runner = BatchAnalysisRunner(
@@ -80,17 +80,21 @@ class BatchAnalysisRunnerTest {
 
         val first = runner.run(BATCH_ID)
         val second = runner.run(BATCH_ID)
+        store.retryFailures(BATCH_ID)
+        val third = runner.run(BATCH_ID)
 
         assertEquals(0, first.completed)
         assertEquals(2, first.failed)
-        assertEquals(mapOf(1L to 2, 2L to 1), attempts)
-        assertEquals(1, second.completed)
-        assertEquals(1, second.failed)
-        assertEquals(0, second.retryableFailed)
-        assertEquals(1, second.permanentFailed)
+        assertEquals(0, second.completed)
+        assertEquals(2, second.failed)
+        assertEquals(mapOf(1L to 2, 2L to 2), attempts)
+        assertEquals(1, third.completed)
+        assertEquals(1, third.failed)
+        assertEquals(0, third.retryableFailed)
+        assertEquals(1, third.permanentFailed)
         assertEquals(WorkItemStatus.COMPLETED, store.status(1L))
         assertEquals(WorkItemStatus.PERMANENT_FAILED, store.status(2L))
-        assertEquals(BatchFinalStatus.COMPLETED, store.finalStatus)
+        assertEquals(BatchFinalStatus.NEEDS_ATTENTION, store.finalStatus)
     }
 
     @Test
@@ -320,12 +324,20 @@ class BatchAnalysisRunnerTest {
 
     @Test
     fun `最终写入前重试把批次改回排队时旧执行器正常退场`() = runBlocking {
-        val store = FakeBatchAnalysisStore(items(1L))
+        val store = FakeBatchAnalysisStore(
+            items(
+                1L to WorkItemStatus.PENDING,
+                2L to WorkItemStatus.PERMANENT_FAILED,
+            ),
+        )
         val runner = BatchAnalysisRunner(
             store = store,
             coordinator = BatchWorkItemCoordinator {},
         )
-        store.beforeFinishBatch = { store.retryFailures(BATCH_ID) }
+        store.beforeFinishBatch = {
+            store.forceBatchStatus(BatchAnalysisStatus.NEEDS_ATTENTION)
+            store.retryFailures(BATCH_ID)
+        }
 
         val result = runner.run(BATCH_ID)
 
@@ -361,6 +373,23 @@ class BatchAnalysisRunnerTest {
         val thrown = runCatching { runner.run(BATCH_ID) }.exceptionOrNull()
 
         assertSame(databaseError, thrown)
+    }
+
+    @Test
+    fun `批次仍为 RUNNING 时工作项转换未命中必须抛错`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+        store.beforeCompleteItem = {
+            store.forceItemStatus(1L, WorkItemStatus.PENDING)
+        }
+
+        val thrown = runCatching { runner.run(BATCH_ID) }.exceptionOrNull()
+
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(WorkItemStatus.PENDING, store.status(1L))
     }
 
     @Test
@@ -440,6 +469,14 @@ private class FakeBatchAnalysisStore(
 
     fun status(id: Long): WorkItemStatus = WorkItemStatus.valueOf(items.getValue(id).status)
 
+    fun forceItemStatus(id: Long, status: WorkItemStatus) {
+        items[id] = items.getValue(id).copy(status = status.name)
+    }
+
+    fun forceBatchStatus(status: BatchAnalysisStatus) {
+        batchStatus = status.name
+    }
+
     override suspend fun recoverInterrupted(batchId: Long) {
         requireBatch(batchId)
         recoverCalls += 1
@@ -452,13 +489,9 @@ private class FakeBatchAnalysisStore(
         }
     }
 
-    override suspend fun controlState(batchId: Long): BatchControlState {
+    override suspend fun batchStatus(batchId: Long): BatchAnalysisStatus {
         requireBatch(batchId)
-        return when (batchStatus) {
-            "PAUSED" -> BatchControlState.PAUSED
-            "CANCELLED" -> BatchControlState.CANCELLED
-            else -> BatchControlState.RUNNABLE
-        }
+        return BatchAnalysisStatus.fromPersisted(batchStatus)
     }
 
     override suspend fun markBatchRunning(batchId: Long): Boolean {
@@ -575,6 +608,11 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun pauseBatch(batchId: Long) {
         requireBatch(batchId)
+        if (batchStatus == BatchAnalysisStatus.PAUSED.name) return
+        check(batchStatus in setOf(
+            BatchAnalysisStatus.QUEUED.name,
+            BatchAnalysisStatus.RUNNING.name,
+        ))
         batchStatus = "PAUSED"
         items.replaceAll { _, item ->
             if (item.status in setOf(
@@ -591,6 +629,8 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun resumeBatch(batchId: Long) {
         requireBatch(batchId)
+        if (batchStatus == BatchAnalysisStatus.QUEUED.name) return
+        check(batchStatus == BatchAnalysisStatus.PAUSED.name)
         batchStatus = "QUEUED"
         items.replaceAll { _, item ->
             when (item.status) {
@@ -603,6 +643,13 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun cancelBatch(batchId: Long) {
         requireBatch(batchId)
+        if (batchStatus == BatchAnalysisStatus.CANCELLED.name) return
+        check(batchStatus in setOf(
+            BatchAnalysisStatus.QUEUED.name,
+            BatchAnalysisStatus.RUNNING.name,
+            BatchAnalysisStatus.PAUSED.name,
+            BatchAnalysisStatus.NEEDS_ATTENTION.name,
+        ))
         batchStatus = "CANCELLED"
         items.replaceAll { _, item ->
             if (item.status in setOf(
@@ -621,6 +668,13 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun retryFailures(batchId: Long) {
         requireBatch(batchId)
+        check(batchStatus == BatchAnalysisStatus.NEEDS_ATTENTION.name)
+        check(items.values.any {
+            it.status in setOf(
+                WorkItemStatus.RETRYABLE_FAILED.name,
+                WorkItemStatus.PERMANENT_FAILED.name,
+            )
+        })
         batchStatus = "QUEUED"
         items.replaceAll { _, item ->
             if (item.status in setOf(
