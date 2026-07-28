@@ -76,7 +76,7 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun controlState(batchId: Long): BatchControlState
 
-    suspend fun markBatchRunning(batchId: Long)
+    suspend fun markBatchRunning(batchId: Long): Boolean
 
     suspend fun nextRunnableItems(
         batchId: Long,
@@ -84,11 +84,11 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
         limit: Int,
     ): List<AnalysisWorkItemEntity>
 
-    suspend fun markRunning(itemId: Long)
+    suspend fun markRunning(itemId: Long): Boolean
 
-    suspend fun completeItem(itemId: Long)
+    suspend fun completeItem(itemId: Long): Boolean
 
-    suspend fun failItem(itemId: Long, retryable: Boolean, message: String)
+    suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean
 
     suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot
 
@@ -115,9 +115,8 @@ class RoomBatchAnalysisStore(
             else -> BatchControlState.RUNNABLE
         }
 
-    override suspend fun markBatchRunning(batchId: Long) {
+    override suspend fun markBatchRunning(batchId: Long): Boolean =
         dao.markBatchRunning(batchId, nowMillis())
-    }
 
     override suspend fun nextRunnableItems(
         batchId: Long,
@@ -125,17 +124,14 @@ class RoomBatchAnalysisStore(
         limit: Int,
     ): List<AnalysisWorkItemEntity> = dao.nextRunnableItems(batchId, afterId, limit)
 
-    override suspend fun markRunning(itemId: Long) {
+    override suspend fun markRunning(itemId: Long): Boolean =
         dao.markRunning(itemId, nowMillis())
-    }
 
-    override suspend fun completeItem(itemId: Long) {
+    override suspend fun completeItem(itemId: Long): Boolean =
         dao.completeItem(itemId, nowMillis())
-    }
 
-    override suspend fun failItem(itemId: Long, retryable: Boolean, message: String) {
+    override suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean =
         dao.failItem(itemId, retryable, message, nowMillis())
-    }
 
     override suspend fun snapshot(batchId: Long): BatchAnalysisSnapshot {
         val counts = dao.batchCounts(batchId)
@@ -205,7 +201,9 @@ class BatchAnalysisRunner(
         }
 
         store.recoverInterrupted(batchId)
-        store.markBatchRunning(batchId)
+        if (!store.markBatchRunning(batchId)) {
+            return resultAfterRejectedTransition(batchId)
+        }
 
         var afterId = 0L
         var currentStage = ""
@@ -234,18 +232,36 @@ class BatchAnalysisRunner(
                 currentStage = item.stage
                 currentMediaId = item.mediaAssetId
                 onProgress(store.snapshot(batchId).toProgress(item))
-                store.markRunning(item.id)
+                if (!store.markRunning(item.id)) {
+                    return resultAfterRejectedTransition(
+                        batchId,
+                        currentStage = currentStage,
+                        currentMediaId = currentMediaId,
+                    )
+                }
 
                 try {
                     coordinator.analyze(item)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: IOException) {
-                    store.failItem(item.id, retryable = true, error.failureMessage())
+                    if (!store.failItem(item.id, retryable = true, error.failureMessage())) {
+                        return resultAfterRejectedTransition(
+                            batchId,
+                            currentStage = currentStage,
+                            currentMediaId = currentMediaId,
+                        )
+                    }
                     onProgress(store.snapshot(batchId).toProgress(item))
                     continue
                 } catch (error: Exception) {
-                    store.failItem(item.id, retryable = false, error.failureMessage())
+                    if (!store.failItem(item.id, retryable = false, error.failureMessage())) {
+                        return resultAfterRejectedTransition(
+                            batchId,
+                            currentStage = currentStage,
+                            currentMediaId = currentMediaId,
+                        )
+                    }
                     onProgress(store.snapshot(batchId).toProgress(item))
                     continue
                 }
@@ -266,7 +282,13 @@ class BatchAnalysisRunner(
                     BatchControlState.RUNNABLE -> Unit
                 }
 
-                store.completeItem(item.id)
+                if (!store.completeItem(item.id)) {
+                    return resultAfterRejectedTransition(
+                        batchId,
+                        currentStage = currentStage,
+                        currentMediaId = currentMediaId,
+                    )
+                }
                 onProgress(store.snapshot(batchId).toProgress(item))
             }
             afterId = page.last().id
@@ -295,23 +317,11 @@ class BatchAnalysisRunner(
             BatchFinalStatus.COMPLETED
         }
         if (!store.finishBatch(batchId, finalStatus)) {
-            return when (store.controlState(batchId)) {
-                BatchControlState.PAUSED -> controlledResult(
-                    batchId,
-                    paused = true,
-                    currentStage = currentStage,
-                    currentMediaId = currentMediaId,
-                )
-                BatchControlState.CANCELLED -> controlledResult(
-                    batchId,
-                    cancelled = true,
-                    currentStage = currentStage,
-                    currentMediaId = currentMediaId,
-                )
-                BatchControlState.RUNNABLE -> error(
-                    "批次 id=$batchId 的最终状态条件写入失败，但控制态仍可运行",
-                )
-            }
+            return resultAfterRejectedTransition(
+                batchId,
+                currentStage = currentStage,
+                currentMediaId = currentMediaId,
+            )
         }
         return snapshot.toResult(
             currentStage = currentStage,
@@ -331,6 +341,34 @@ class BatchAnalysisRunner(
         currentStage = currentStage,
         currentMediaId = currentMediaId,
     )
+
+    /**
+     * 条件转换未命中只表示控制态发生竞态；RUNNABLE 表示旧执行器已被新调度取代。
+     * 数据库异常仍由 Store 原样抛出。
+     */
+    private suspend fun resultAfterRejectedTransition(
+        batchId: Long,
+        currentStage: String = "",
+        currentMediaId: Long = -1L,
+    ): BatchAnalysisResult = when (store.controlState(batchId)) {
+        BatchControlState.PAUSED -> controlledResult(
+            batchId,
+            paused = true,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+        BatchControlState.CANCELLED -> controlledResult(
+            batchId,
+            cancelled = true,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+        BatchControlState.RUNNABLE -> controlledResult(
+            batchId,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
+        )
+    }
 
     private companion object {
         const val DEFAULT_PAGE_SIZE = 32

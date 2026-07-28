@@ -64,8 +64,11 @@ abstract class BatchAnalysisDao {
         limit: Int,
     ): List<AnalysisWorkItemEntity>
 
-    suspend fun markRunning(itemId: Long, updatedAtMillis: Long) {
-        checkSingleItemUpdated(markRunningInternal(itemId, updatedAtMillis), itemId, "标记运行")
+    /** 工作项不存在时抛错；存在但来源状态已变化时返回 false。 */
+    @Transaction
+    open suspend fun markRunning(itemId: Long, updatedAtMillis: Long): Boolean {
+        requireWorkItem(itemId)
+        return markRunningInternal(itemId, updatedAtMillis) == 1
     }
 
     @Query(
@@ -110,8 +113,11 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
-    suspend fun completeItem(itemId: Long, updatedAtMillis: Long) {
-        checkSingleItemUpdated(completeItemInternal(itemId, updatedAtMillis), itemId, "完成")
+    /** 工作项不存在时抛错；存在但已不在 RUNNING 时返回 false。 */
+    @Transaction
+    open suspend fun completeItem(itemId: Long, updatedAtMillis: Long): Boolean {
+        requireWorkItem(itemId)
+        return completeItemInternal(itemId, updatedAtMillis) == 1
     }
 
     @Query(
@@ -129,19 +135,20 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
-    /** 根据 retryable 映射失败状态，message 按调用方传入的原始文本持久化。 */
-    suspend fun failItem(
+    /**
+     * 根据 retryable 映射失败状态，message 按原始文本持久化。
+     * 工作项不存在时抛错；存在但已不在 RUNNING 时返回 false。
+     */
+    @Transaction
+    open suspend fun failItem(
         itemId: Long,
         retryable: Boolean,
         message: String,
         updatedAtMillis: Long,
-    ) {
+    ): Boolean {
+        requireWorkItem(itemId)
         val status = if (retryable) "RETRYABLE_FAILED" else "PERMANENT_FAILED"
-        checkSingleItemUpdated(
-            failItemInternal(itemId, status, message, updatedAtMillis),
-            itemId,
-            "标记失败",
-        )
+        return failItemInternal(itemId, status, message, updatedAtMillis) == 1
     }
 
     @Query(
@@ -212,6 +219,20 @@ abstract class BatchAnalysisDao {
     @Query(
         """
         UPDATE analysis_batches
+        SET status = 'RUNNING',
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :batchId
+          AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'NEEDS_ATTENTION')
+        """
+    )
+    protected abstract suspend fun markBatchRunningInternal(
+        batchId: Long,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_batches
         SET status = :status,
             updated_at_millis = :updatedAtMillis
         WHERE id = :batchId
@@ -224,17 +245,11 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    /** 批次不存在时抛错；控制态已变化时返回 false。 */
     @Transaction
-    open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long) {
-        val status = batchStatus(batchId)
-        check(status !in setOf("PAUSED", "CANCELLED")) {
-            "批次 id=$batchId 当前状态不允许运行：$status"
-        }
-        checkBatchUpdated(
-            updateBatchStatusInternal(batchId, "RUNNING", updatedAtMillis),
-            batchId,
-            "标记运行",
-        )
+    open suspend fun markBatchRunning(batchId: Long, updatedAtMillis: Long): Boolean {
+        batchStatus(batchId)
+        return markBatchRunningInternal(batchId, updatedAtMillis) == 1
     }
 
     @Query(
@@ -665,6 +680,13 @@ abstract class BatchAnalysisDao {
         check(updatedRows == 1) {
             "无法对工作项 id=$itemId 执行$operation：工作项不存在或状态不允许"
         }
+    }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM analysis_work_items WHERE id = :itemId)")
+    protected abstract suspend fun workItemExists(itemId: Long): Boolean
+
+    private suspend fun requireWorkItem(itemId: Long) {
+        check(workItemExists(itemId)) { "工作项不存在：$itemId" }
     }
 
     private fun checkBatchUpdated(updatedRows: Int, batchId: Long, operation: String) {

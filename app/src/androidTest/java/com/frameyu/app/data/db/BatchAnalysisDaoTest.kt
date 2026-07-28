@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -106,40 +107,50 @@ class BatchAnalysisDaoTest {
                 ),
             )
 
-            assertIllegalState { dao.markRunning(itemId = 21L, updatedAtMillis = 10L) }
-            assertIllegalState { dao.markRunning(itemId = 22L, updatedAtMillis = 10L) }
+            assertFalse(dao.markRunning(itemId = 21L, updatedAtMillis = 10L))
+            assertFalse(dao.markRunning(itemId = 22L, updatedAtMillis = 10L))
+            assertIllegalState { dao.markRunning(itemId = 999L, updatedAtMillis = 10L) }
 
             assertIllegalState {
                 dao.saveCheckpoint(itemId = 23L, nextTimestampMillis = 100L, updatedAtMillis = 10L)
             }
-            assertIllegalState { dao.completeItem(itemId = 23L, updatedAtMillis = 10L) }
-            assertIllegalState {
+            assertFalse(dao.completeItem(itemId = 23L, updatedAtMillis = 10L))
+            assertFalse(
                 dao.failItem(
                     itemId = 23L,
                     retryable = true,
                     message = "仍在等待",
                     updatedAtMillis = 10L,
+                ),
+            )
+            assertIllegalState { dao.completeItem(itemId = 999L, updatedAtMillis = 10L) }
+            assertIllegalState {
+                dao.failItem(
+                    itemId = 999L,
+                    retryable = true,
+                    message = "不存在",
+                    updatedAtMillis = 10L,
                 )
             }
 
-            assertIllegalState { dao.completeItem(itemId = 22L, updatedAtMillis = 10L) }
-            assertIllegalState {
+            assertFalse(dao.completeItem(itemId = 22L, updatedAtMillis = 10L))
+            assertFalse(
                 dao.failItem(
                     itemId = 22L,
                     retryable = false,
                     message = "已经完成",
                     updatedAtMillis = 10L,
-                )
-            }
-            assertIllegalState { dao.completeItem(itemId = 24L, updatedAtMillis = 10L) }
-            assertIllegalState {
+                ),
+            )
+            assertFalse(dao.completeItem(itemId = 24L, updatedAtMillis = 10L))
+            assertFalse(
                 dao.failItem(
                     itemId = 24L,
                     retryable = false,
                     message = "已经失败",
                     updatedAtMillis = 10L,
-                )
-            }
+                ),
+            )
 
             dao.markRunning(itemId = 26L, updatedAtMillis = 20L)
             dao.failItem(
