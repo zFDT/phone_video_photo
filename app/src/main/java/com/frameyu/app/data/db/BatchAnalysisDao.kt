@@ -201,7 +201,7 @@ abstract class BatchAnalysisDao {
     ): Int
 
     /**
-     * Runner 级异常收敛当前 RUNNING 批次的全部可恢复项，不覆盖已完成、取消和永久失败结果。
+     * Runner 级异常收敛当前 QUEUED 或 RUNNING 批次的全部可恢复项，不覆盖终态结果。
      */
     @Transaction
     open suspend fun failActiveExecution(
@@ -210,9 +210,14 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Boolean {
         val status = batchStatus(batchId)
-        if (status != "RUNNING") return false
+        if (status !in setOf("QUEUED", "RUNNING")) return false
         failRecoverableItemsInternal(batchId, message, updatedAtMillis)
-        return finishRunningBatchInternal(batchId, "NEEDS_ATTENTION", updatedAtMillis) == 1
+        return updateBatchStatusFromInternal(
+            batchId = batchId,
+            status = "NEEDS_ATTENTION",
+            updatedAtMillis = updatedAtMillis,
+            sourceStatuses = listOf("QUEUED", "RUNNING"),
+        ) == 1
     }
 
     @Query("SELECT status FROM analysis_batches WHERE id = :batchId")

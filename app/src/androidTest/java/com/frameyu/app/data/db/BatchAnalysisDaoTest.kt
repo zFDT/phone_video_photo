@@ -368,6 +368,27 @@ class BatchAnalysisDaoTest {
                 expectedNextTimestampMillis = 0L,
             )
 
+            val queuedBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = listOf(workItem(88L, 1L, "QUALITY", status = "PENDING")),
+            )
+            assertTrue(
+                dao.failActiveExecution(
+                    queuedBatchId,
+                    message = "首次前台任务启动失败",
+                    updatedAtMillis = 46L,
+                ),
+            )
+            assertEquals("NEEDS_ATTENTION", dao.batchStatus(queuedBatchId))
+            assertWorkItem(
+                database,
+                itemId = 88L,
+                expectedStatus = "RETRYABLE_FAILED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+                expectedErrorMessage = "首次前台任务启动失败",
+            )
+
             val completedOnlyBatchId = dao.createBatch(
                 batch = batch().copy(status = "RUNNING"),
                 items = listOf(workItem(87L, 1L, "QUALITY", status = "COMPLETED")),

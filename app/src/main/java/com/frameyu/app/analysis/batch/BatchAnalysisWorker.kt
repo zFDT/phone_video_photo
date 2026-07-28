@@ -353,7 +353,9 @@ class BatchAnalysisRunner(
         batchId: Long,
         message: String,
     ): BatchAnalysisResult {
-        store.failActiveExecution(batchId, message)
+        if (!store.failActiveExecution(batchId, message)) {
+            return resultAfterRejectedTransition(batchId)
+        }
         return store.snapshot(batchId).toResult(
             currentStage = "",
             currentMediaId = -1L,

@@ -567,6 +567,73 @@ class BatchAnalysisRunnerTest {
         assertEquals(0, providerCalls)
     }
 
+    @Test
+    fun `beforeRun 最终失败会收敛尚未启动的 QUEUED 批次`() = runBlocking {
+        val store = FakeBatchAnalysisStore(items(1L))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+        val execution = BatchAnalysisExecution(
+            runBatch = runner::run,
+            failActiveExecution = runner::failActiveExecution,
+            logger = BatchExecutionLogger { _, _, _, _ -> },
+        )
+
+        val outcome = execution.execute(
+            batchId = BATCH_ID,
+            runAttemptCount = 2,
+            beforeRun = { throw IllegalStateException("首次前台任务启动失败") },
+        )
+
+        assertTrue(outcome is BatchExecutionOutcome.Success)
+        val result = (outcome as BatchExecutionOutcome.Success).result
+        assertEquals(1, result?.retryableFailed)
+        assertEquals(BatchAnalysisStatus.NEEDS_ATTENTION, store.batchStatus(BATCH_ID))
+        assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(1L))
+    }
+
+    @Test
+    fun `失败收敛条件未命中时按穷举批次状态退场`() = runBlocking {
+        val normalExitStatuses = listOf(
+            BatchAnalysisStatus.QUEUED,
+            BatchAnalysisStatus.PAUSED,
+            BatchAnalysisStatus.CANCELLED,
+            BatchAnalysisStatus.COMPLETED,
+            BatchAnalysisStatus.NEEDS_ATTENTION,
+        )
+        normalExitStatuses.forEach { status ->
+            val store = FakeBatchAnalysisStore(items(1L)).apply {
+                forceBatchStatus(status)
+                failActiveExecutionResult = false
+            }
+            val runner = BatchAnalysisRunner(
+                store = store,
+                coordinator = BatchWorkItemCoordinator {},
+            )
+
+            val result = runner.failActiveExecution(BATCH_ID, "状态竞态")
+
+            assertEquals(status == BatchAnalysisStatus.PAUSED, result.paused)
+            assertEquals(status == BatchAnalysisStatus.CANCELLED, result.cancelled)
+        }
+
+        val runningStore = FakeBatchAnalysisStore(items(1L)).apply {
+            forceBatchStatus(BatchAnalysisStatus.RUNNING)
+            failActiveExecutionResult = false
+        }
+        val runningRunner = BatchAnalysisRunner(
+            store = runningStore,
+            coordinator = BatchWorkItemCoordinator {},
+        )
+
+        val thrown = runCatching {
+            runningRunner.failActiveExecution(BATCH_ID, "状态不变量损坏")
+        }.exceptionOrNull()
+
+        assertTrue(thrown is IllegalStateException)
+    }
+
     private fun items(vararg ids: Long): List<AnalysisWorkItemEntity> =
         ids.map { id -> item(id, WorkItemStatus.PENDING) }
 
@@ -607,6 +674,7 @@ private class FakeBatchAnalysisStore(
     var beforeMarkBatchRunning: (suspend () -> Unit)? = null
     var beforeCompleteItem: (suspend () -> Unit)? = null
     var beforeFinishBatch: (suspend () -> Unit)? = null
+    var failActiveExecutionResult: Boolean? = null
 
     fun status(id: Long): WorkItemStatus = WorkItemStatus.valueOf(items.getValue(id).status)
 
@@ -708,9 +776,15 @@ private class FakeBatchAnalysisStore(
 
     override suspend fun failActiveExecution(batchId: Long, message: String): Boolean {
         requireBatch(batchId)
-        if (batchStatus != "RUNNING") return false
+        failActiveExecutionResult?.let { return it }
+        if (batchStatus !in setOf("QUEUED", "RUNNING")) return false
         items.replaceAll { _, item ->
-            if (item.status == WorkItemStatus.RUNNING.name) {
+            if (item.status in setOf(
+                    WorkItemStatus.PENDING.name,
+                    WorkItemStatus.RUNNING.name,
+                    WorkItemStatus.RETRYABLE_FAILED.name,
+                )
+            ) {
                 item.copy(
                     status = WorkItemStatus.RETRYABLE_FAILED.name,
                     errorMessage = message,
