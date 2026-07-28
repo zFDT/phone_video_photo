@@ -104,6 +104,101 @@ class BatchAnalysisExecutionTest {
     }
 
     @Test
+    fun `前台准备的包装 IOException 纳入有限重试边界`() = runBlocking {
+        var runCalls = 0
+        val execution = execution(
+            runBatch = {
+                runCalls += 1
+                result()
+            },
+        )
+
+        val outcome = execution.execute(
+            batchId = BATCH_ID,
+            runAttemptCount = 0,
+            beforeRun = {
+                throw IllegalStateException(
+                    "前台服务启动失败",
+                    IOException("通知服务暂不可用"),
+                )
+            },
+        )
+
+        assertEquals(BatchExecutionOutcome.Retry, outcome)
+        assertEquals(0, runCalls)
+    }
+
+    @Test
+    fun `前台准备普通异常达到边界后持久化并释放共享链`() = runBlocking {
+        var persistedMessage = ""
+        val execution = execution(
+            runBatch = { result() },
+            failActive = { _, message ->
+                persistedMessage = message
+                result(retryableFailed = 1)
+            },
+        )
+
+        val outcome = execution.execute(
+            batchId = BATCH_ID,
+            runAttemptCount = 2,
+            beforeRun = { throw IllegalStateException("无法切换前台任务") },
+        )
+
+        assertTrue(outcome is BatchExecutionOutcome.Success)
+        assertEquals("无法切换前台任务", persistedMessage)
+    }
+
+    @Test
+    fun `前台准备的 CancellationException 与 Error 原样传播`() = runBlocking {
+        val cancellation = CancellationException("前台准备取消")
+        val fatal = AssertionError("前台准备致命错误")
+        val execution = execution(runBatch = { result() })
+
+        assertSame(
+            cancellation,
+            runCatching {
+                execution.execute(BATCH_ID, 0, beforeRun = { throw cancellation })
+            }.exceptionOrNull(),
+        )
+        assertSame(
+            fatal,
+            runCatching {
+                execution.execute(BATCH_ID, 0, beforeRun = { throw fatal })
+            }.exceptionOrNull(),
+        )
+    }
+
+    @Test
+    fun `成功输出同时保留进度与执行错误信息`() {
+        val output = BatchExecutionOutcome.Success(
+            result = result(
+                completed = 2,
+                retryableFailed = 1,
+                currentStage = "EMBEDDING",
+                currentMediaId = 99L,
+            ),
+            errorMessage = "前台执行失败后已持久化",
+        ).toWorkerOutputData()
+
+        assertEquals(2, output.getInt(BatchAnalysisWorker.KEY_COMPLETED, -1))
+        assertEquals(1, output.getInt(BatchAnalysisWorker.KEY_FAILED, -1))
+        assertEquals(3, output.getInt(BatchAnalysisWorker.KEY_TOTAL, -1))
+        assertEquals(
+            "EMBEDDING",
+            output.getString(BatchAnalysisWorker.KEY_CURRENT_STAGE),
+        )
+        assertEquals(
+            99L,
+            output.getLong(BatchAnalysisWorker.KEY_CURRENT_MEDIA_ID, -1L),
+        )
+        assertEquals(
+            "前台执行失败后已持久化",
+            output.getString(BatchAnalysisWorker.KEY_ERROR_MESSAGE),
+        )
+    }
+
+    @Test
     fun `CancellationException 与 Error 原样传播`() = runBlocking {
         val cancellation = CancellationException("用户取消")
         val cancellationExecution = execution(runBatch = { throw cancellation })
@@ -132,6 +227,8 @@ class BatchAnalysisExecutionTest {
         fun result(
             completed: Int = 0,
             retryableFailed: Int = 0,
+            currentStage: String = "",
+            currentMediaId: Long = -1L,
         ) = BatchAnalysisResult(
             completed = completed,
             failed = retryableFailed,
@@ -140,8 +237,8 @@ class BatchAnalysisExecutionTest {
             permanentFailed = 0,
             paused = false,
             cancelled = false,
-            currentStage = "",
-            currentMediaId = -1L,
+            currentStage = currentStage,
+            currentMediaId = currentMediaId,
         )
     }
 }

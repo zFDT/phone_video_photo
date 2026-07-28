@@ -184,8 +184,24 @@ abstract class BatchAnalysisDao {
         updatedAtMillis: Long,
     ): Int
 
+    @Query(
+        """
+        UPDATE analysis_work_items
+        SET status = 'RETRYABLE_FAILED',
+            error_message = :message,
+            updated_at_millis = :updatedAtMillis
+        WHERE batch_id = :batchId
+          AND status IN ('PENDING', 'RUNNING', 'RETRYABLE_FAILED')
+        """
+    )
+    protected abstract suspend fun failRecoverableItemsInternal(
+        batchId: Long,
+        message: String,
+        updatedAtMillis: Long,
+    ): Int
+
     /**
-     * Runner 级异常只收敛仍由当前执行器持有的 RUNNING 批次，不覆盖暂停、取消或新 attempt。
+     * Runner 级异常收敛当前 RUNNING 批次的全部可恢复项，不覆盖已完成、取消和永久失败结果。
      */
     @Transaction
     open suspend fun failActiveExecution(
@@ -195,7 +211,7 @@ abstract class BatchAnalysisDao {
     ): Boolean {
         val status = batchStatus(batchId)
         if (status != "RUNNING") return false
-        recoverInterruptedItemsInternal(batchId, message, updatedAtMillis)
+        failRecoverableItemsInternal(batchId, message, updatedAtMillis)
         return finishRunningBatchInternal(batchId, "NEEDS_ATTENTION", updatedAtMillis) == 1
     }
 
@@ -474,12 +490,6 @@ abstract class BatchAnalysisDao {
         SELECT b.id
         FROM analysis_batches AS b
         WHERE b.status IN ('QUEUED', 'RUNNING')
-          AND EXISTS (
-              SELECT 1
-              FROM analysis_work_items AS w
-              WHERE w.batch_id = b.id
-                AND w.status NOT IN ('COMPLETED', 'CANCELLED')
-          )
         ORDER BY b.id
         """
     )
@@ -490,10 +500,6 @@ abstract class BatchAnalysisDao {
         val status = batchStatus(batchId)
         check(status == "NEEDS_ATTENTION") {
             "批次 id=$batchId 当前状态不允许重试失败项：$status"
-        }
-        val counts = queryBatchCounts(batchId)
-        check(counts.retryableFailed + counts.permanentFailed > 0) {
-            "批次 id=$batchId 没有可重试的失败项"
         }
         resetFailedItems(batchId, updatedAtMillis)
         checkBatchTransitionUpdated(

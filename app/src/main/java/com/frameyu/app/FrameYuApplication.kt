@@ -152,7 +152,10 @@ class FrameYuApplication : Application(), Configuration.Provider {
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
         applicationScope.launch {
             try {
-                batchAnalysisWorkScheduler.reconcilePendingBatches()
+                val reconciliation = batchAnalysisWorkScheduler.reconcilePendingBatches()
+                reconciliation.failures.forEach { (batchId, error) ->
+                    Log.e(TAG, "批量任务启动对账入队失败 batchId=$batchId", error)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

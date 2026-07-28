@@ -10,6 +10,7 @@ import androidx.work.workDataOf
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 private const val BATCH_TAG_PREFIX = "frameyu-batch:"
@@ -27,25 +28,31 @@ class BatchAnalysisScheduler internal constructor(
     suspend fun enqueue(batchId: Long): UUID {
         requireBatchId(batchId)
         val request = requestFor(batchId)
-        try {
-            workManager.enqueueUniqueWork(
-                BatchAnalysisWorker.UNIQUE_WORK_NAME,
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
-                request,
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
+        val outcome = withContext(NonCancellable) {
             try {
-                store.markBatchNeedsAttention(batchId, ENQUEUE_FAILURE_MESSAGE)
+                workManager.enqueueUniqueWork(
+                    BatchAnalysisWorker.UNIQUE_WORK_NAME,
+                    ExistingWorkPolicy.APPEND_OR_REPLACE,
+                    request,
+                )
+                EnqueueOutcome.Success(request.id)
             } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (persistenceError: Exception) {
-                error.addSuppressed(persistenceError)
+                EnqueueOutcome.Failure(cancelled)
+            } catch (error: Exception) {
+                try {
+                    store.markBatchNeedsAttention(batchId, ENQUEUE_FAILURE_MESSAGE)
+                } catch (cancelled: CancellationException) {
+                    return@withContext EnqueueOutcome.Failure(cancelled)
+                } catch (persistenceError: Exception) {
+                    error.addSuppressed(persistenceError)
+                }
+                EnqueueOutcome.Failure(error)
             }
-            throw error
         }
-        return request.id
+        return when (outcome) {
+            is EnqueueOutcome.Success -> outcome.requestId
+            is EnqueueOutcome.Failure -> throw outcome.error
+        }
     }
 
     suspend fun pause(batchId: Long) {
@@ -70,15 +77,32 @@ class BatchAnalysisScheduler internal constructor(
         return enqueue(batchId)
     }
 
-    suspend fun reconcilePendingBatches(): Map<Long, UUID> {
+    suspend fun reconcilePendingBatches(): BatchReconciliationResult {
         val activeBatchIds = workManager.activeBatchIds()
-        return buildMap {
-            store.reconcilableBatchIds()
-                .distinct()
-                .filterNot(activeBatchIds::contains)
-                .forEach { batchId -> put(batchId, enqueue(batchId)) }
-        }
+        val enqueued = linkedMapOf<Long, UUID>()
+        val failures = linkedMapOf<Long, Exception>()
+        store.reconcilableBatchIds()
+            .distinct()
+            .filterNot(activeBatchIds::contains)
+            .forEach { batchId ->
+                try {
+                    enqueued[batchId] = enqueue(batchId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    failures[batchId] = error
+                }
+            }
+        return BatchReconciliationResult(
+            enqueued = enqueued,
+            failures = failures,
+        )
     }
+
+    data class BatchReconciliationResult(
+        val enqueued: Map<Long, UUID>,
+        val failures: Map<Long, Exception>,
+    )
 
     private fun requestFor(batchId: Long): OneTimeWorkRequest =
         OneTimeWorkRequestBuilder<BatchAnalysisWorker>()
@@ -103,6 +127,12 @@ class BatchAnalysisScheduler internal constructor(
             store,
         )
     }
+}
+
+private sealed interface EnqueueOutcome {
+    data class Success(val requestId: UUID) : EnqueueOutcome
+
+    data class Failure(val error: Exception) : EnqueueOutcome
 }
 
 internal interface BatchSchedulerWorkManager {

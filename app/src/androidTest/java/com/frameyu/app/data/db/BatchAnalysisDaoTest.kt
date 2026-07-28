@@ -310,6 +310,93 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun runnerFailureConvergesRecoverableItemsAndAllowsCompletedOnlyRetry() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll((1L..6L).map(::media))
+            val dao = database.batchAnalysisDao()
+            val mixedBatchId = dao.createBatch(
+                batch = batch().copy(status = "RUNNING"),
+                items = listOf(
+                    workItem(81L, 1L, "QUALITY", status = "PENDING"),
+                    workItem(82L, 2L, "QUALITY", status = "RUNNING"),
+                    workItem(83L, 3L, "QUALITY", status = "RETRYABLE_FAILED"),
+                    workItem(84L, 4L, "QUALITY", status = "PERMANENT_FAILED"),
+                    workItem(85L, 5L, "QUALITY", status = "COMPLETED"),
+                    workItem(86L, 6L, "QUALITY", status = "CANCELLED"),
+                ),
+            )
+
+            assertTrue(
+                dao.failActiveExecution(
+                    mixedBatchId,
+                    message = "Runner 级失败",
+                    updatedAtMillis = 45L,
+                ),
+            )
+
+            assertEquals("NEEDS_ATTENTION", dao.batchStatus(mixedBatchId))
+            listOf(81L, 82L, 83L).forEach { itemId ->
+                assertWorkItem(
+                    database,
+                    itemId = itemId,
+                    expectedStatus = "RETRYABLE_FAILED",
+                    expectedAttempts = 0,
+                    expectedNextTimestampMillis = 0L,
+                    expectedErrorMessage = "Runner 级失败",
+                )
+            }
+            assertWorkItem(
+                database,
+                itemId = 84L,
+                expectedStatus = "PERMANENT_FAILED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
+            assertWorkItem(
+                database,
+                itemId = 85L,
+                expectedStatus = "COMPLETED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
+            assertWorkItem(
+                database,
+                itemId = 86L,
+                expectedStatus = "CANCELLED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
+
+            val completedOnlyBatchId = dao.createBatch(
+                batch = batch().copy(status = "RUNNING"),
+                items = listOf(workItem(87L, 1L, "QUALITY", status = "COMPLETED")),
+            )
+            assertTrue(
+                dao.failActiveExecution(
+                    completedOnlyBatchId,
+                    message = "最终收尾失败",
+                    updatedAtMillis = 46L,
+                ),
+            )
+            assertEquals("NEEDS_ATTENTION", dao.batchStatus(completedOnlyBatchId))
+
+            dao.retryFailures(completedOnlyBatchId, updatedAtMillis = 47L)
+
+            assertEquals("QUEUED", dao.batchStatus(completedOnlyBatchId))
+            assertWorkItem(
+                database,
+                itemId = 87L,
+                expectedStatus = "COMPLETED",
+                expectedAttempts = 0,
+                expectedNextTimestampMillis = 0L,
+            )
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun reconcilableBatchesAndEnqueueFailureStateArePersistent() = runBlocking {
         val database = createDatabase()
         try {
@@ -326,8 +413,19 @@ class BatchAnalysisDaoTest {
                 batch = batch().copy(status = "COMPLETED"),
                 items = listOf(workItem(48L, 1L, "QUALITY", status = "COMPLETED")),
             )
+            val emptyQueuedBatchId = dao.createBatch(
+                batch = batch().copy(status = "QUEUED"),
+                items = emptyList(),
+            )
+            val completedItemsRunningBatchId = dao.createBatch(
+                batch = batch().copy(status = "RUNNING"),
+                items = listOf(workItem(49L, 1L, "QUALITY", status = "COMPLETED")),
+            )
 
-            assertEquals(listOf(queuedBatchId), dao.reconcilableBatchIds())
+            assertEquals(
+                listOf(queuedBatchId, emptyQueuedBatchId, completedItemsRunningBatchId),
+                dao.reconcilableBatchIds(),
+            )
 
             dao.markBatchNeedsAttention(
                 queuedBatchId,

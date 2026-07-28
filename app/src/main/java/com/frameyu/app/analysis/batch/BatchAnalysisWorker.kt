@@ -455,9 +455,8 @@ class BatchAnalysisWorker(
 
     override suspend fun doWork(): Result {
         val batchId = inputData.getLong(KEY_BATCH_ID, -1L)
-        if (batchId <= 0L) return Result.failure(errorData("缺少有效的批次 ID"))
+        if (batchId <= 0L) return Result.failure(workerErrorData("缺少有效的批次 ID"))
 
-        setForeground(createForegroundInfo(batchId, BatchAnalysisProgress(0, 0, 0, "", -1L)))
         val execution = BatchAnalysisExecution(
             runBatch = runner::run,
             failActiveExecution = runner::failActiveExecution,
@@ -477,17 +476,25 @@ class BatchAnalysisWorker(
             },
         )
         return when (
-            val outcome = execution.execute(batchId, runAttemptCount) { progress ->
-                setProgress(progress.toData())
-                setForeground(createForegroundInfo(batchId, progress))
-            }
+            val outcome = execution.execute(
+                batchId = batchId,
+                runAttemptCount = runAttemptCount,
+                beforeRun = {
+                    setForeground(
+                        createForegroundInfo(
+                            batchId,
+                            BatchAnalysisProgress(0, 0, 0, "", -1L),
+                        ),
+                    )
+                },
+                onProgress = { progress ->
+                    setProgress(progress.toData())
+                    setForeground(createForegroundInfo(batchId, progress))
+                },
+            )
         ) {
             BatchExecutionOutcome.Retry -> Result.retry()
-            is BatchExecutionOutcome.Success -> {
-                val output = outcome.result?.toData()
-                    ?: errorData(outcome.errorMessage ?: "批量分析执行失败")
-                Result.success(output)
-            }
+            is BatchExecutionOutcome.Success -> Result.success(outcome.toWorkerOutputData())
         }
     }
 
@@ -518,10 +525,6 @@ class BatchAnalysisWorker(
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
     }
-
-    private fun errorData(message: String): Data = Data.Builder()
-        .putString(KEY_ERROR_MESSAGE, message)
-        .build()
 
     companion object {
         const val UNIQUE_WORK_NAME = "frameyu-batch-analysis"
@@ -632,6 +635,25 @@ private fun BatchAnalysisResult.toData(): Data = Data.Builder()
     .putLong(BatchAnalysisWorker.KEY_CURRENT_MEDIA_ID, currentMediaId)
     .putBoolean("paused", paused)
     .putBoolean("cancelled", cancelled)
+    .build()
+
+internal fun BatchExecutionOutcome.Success.toWorkerOutputData(): Data {
+    val executionResult = result
+    if (executionResult == null) {
+        return workerErrorData(errorMessage ?: "批量分析执行失败")
+    }
+    return Data.Builder()
+        .putAll(executionResult.toData())
+        .apply {
+            errorMessage?.let { message ->
+                putString(BatchAnalysisWorker.KEY_ERROR_MESSAGE, message)
+            }
+        }
+        .build()
+}
+
+private fun workerErrorData(message: String): Data = Data.Builder()
+    .putString(BatchAnalysisWorker.KEY_ERROR_MESSAGE, message)
     .build()
 
 private fun Exception.failureMessage(): String = message ?: "批量分析失败"

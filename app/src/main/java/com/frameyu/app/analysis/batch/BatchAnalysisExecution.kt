@@ -46,9 +46,11 @@ internal class BatchAnalysisExecution(
     suspend fun execute(
         batchId: Long,
         runAttemptCount: Int,
+        beforeRun: suspend () -> Unit = {},
         onProgress: suspend (BatchAnalysisProgress) -> Unit = {},
     ): BatchExecutionOutcome {
         return try {
+            beforeRun()
             BatchExecutionOutcome.Success(runBatch(batchId, onProgress))
         } catch (cancelled: CancellationException) {
             throw cancelled
