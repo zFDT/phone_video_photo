@@ -30,6 +30,18 @@ class BatchAnalysisScheduler internal constructor(
         requireBatchId(batchId)
         val outcome = withContext(NonCancellable) {
             val execution = store.batchExecutionKey(batchId)
+            var activeLookupError: Exception? = null
+            val activeRequestId = try {
+                workManager.activeExecutions()[execution]
+            } catch (cancelled: CancellationException) {
+                return@withContext EnqueueOutcome.Failure(cancelled)
+            } catch (error: Exception) {
+                activeLookupError = error
+                null
+            }
+            if (activeRequestId != null) {
+                return@withContext EnqueueOutcome.Success(activeRequestId)
+            }
             val request = requestFor(execution)
             try {
                 workManager.enqueueUniqueWork(
@@ -41,6 +53,18 @@ class BatchAnalysisScheduler internal constructor(
             } catch (cancelled: CancellationException) {
                 EnqueueOutcome.Failure(cancelled)
             } catch (error: Exception) {
+                val racedActiveRequestId = try {
+                    workManager.activeExecutions()[execution]
+                } catch (cancelled: CancellationException) {
+                    return@withContext EnqueueOutcome.Failure(cancelled)
+                } catch (lookupError: Exception) {
+                    error.addSuppressed(lookupError)
+                    null
+                }
+                if (racedActiveRequestId != null) {
+                    return@withContext EnqueueOutcome.Success(racedActiveRequestId)
+                }
+                activeLookupError?.let(error::addSuppressed)
                 try {
                     store.markBatchNeedsAttention(
                         batchId = batchId,
@@ -89,7 +113,7 @@ class BatchAnalysisScheduler internal constructor(
         val failures = linkedMapOf<Long, Exception>()
         store.reconcilableExecutions()
             .distinct()
-            .filterNot(activeExecutions::contains)
+            .filterNot(activeExecutions::containsKey)
             .forEach { execution ->
                 try {
                     enqueued[execution.batchId] = enqueue(execution.batchId)
@@ -158,7 +182,7 @@ internal interface BatchSchedulerWorkManager {
         request: OneTimeWorkRequest,
     )
 
-    suspend fun activeExecutions(): Set<BatchExecutionKey>
+    suspend fun activeExecutions(): Map<BatchExecutionKey, UUID>
 }
 
 private class WorkManagerBatchSchedulerWorkManager(
@@ -176,14 +200,17 @@ private class WorkManagerBatchSchedulerWorkManager(
         }
     }
 
-    override suspend fun activeExecutions(): Set<BatchExecutionKey> = withContext(Dispatchers.IO) {
-        workManager.getWorkInfosForUniqueWork(BatchAnalysisWorker.UNIQUE_WORK_NAME)
-            .get()
-            .asSequence()
-            .filter { workInfo -> !workInfo.state.isFinished }
-            .mapNotNull(WorkInfo::batchExecution)
-            .toSet()
-    }
+    override suspend fun activeExecutions(): Map<BatchExecutionKey, UUID> =
+        withContext(Dispatchers.IO) {
+            workManager.getWorkInfosForUniqueWork(BatchAnalysisWorker.UNIQUE_WORK_NAME)
+                .get()
+                .asSequence()
+                .filter { workInfo -> !workInfo.state.isFinished }
+                .mapNotNull { workInfo ->
+                    workInfo.batchExecution()?.let { execution -> execution to workInfo.id }
+                }
+                .toMap()
+        }
 }
 
 private fun WorkInfo.batchExecution(): BatchExecutionKey? = tags.asSequence()

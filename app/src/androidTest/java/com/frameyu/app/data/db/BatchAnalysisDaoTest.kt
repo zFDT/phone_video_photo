@@ -3,6 +3,7 @@ package com.frameyu.app.data.db
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
 import androidx.room.Room
+import androidx.room.migration.Migration
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.flow.first
@@ -774,7 +775,7 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
-    fun migration3To5PreservesOldDataAndAddsExecutionGeneration() = runBlocking {
+    fun migration3To5IsolatesExistingV4ActiveBatchesAndPreservesNewDefault() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val databaseName = "batch-analysis-migration-3-5.db"
         context.deleteDatabase(databaseName)
@@ -864,18 +865,42 @@ class BatchAnalysisDaoTest {
                 database.execSQL("PRAGMA user_version = 3")
             }
 
+            val seedActiveV4Batches = object : Migration(3, 4) {
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    FrameYuDatabase.MIGRATION_3_4.migrate(db)
+                    db.execSQL(
+                        """
+                        INSERT INTO analysis_batches (
+                            id, status, scope, created_at_millis, updated_at_millis
+                        ) VALUES
+                            (201, 'QUEUED', 'ALL', 1, 1),
+                            (202, 'RUNNING', 'ALL', 1, 1),
+                            (203, 'COMPLETED', 'ALL', 1, 1)
+                        """.trimIndent(),
+                    )
+                }
+            }
             val migratedDatabase = Room.databaseBuilder(context, FrameYuDatabase::class.java, databaseName)
                 .addMigrations(
-                    FrameYuDatabase.MIGRATION_3_4,
+                    seedActiveV4Batches,
                     FrameYuDatabase.MIGRATION_4_5,
                 )
                 .build()
             roomDatabase = migratedDatabase
             assertEquals("content://media/99", migratedDatabase.mediaAssetDao().getById(99L)?.uri)
+            val dao = migratedDatabase.batchAnalysisDao()
+            assertEquals(1L, dao.batchControlState(201L).executionGeneration)
+            assertEquals(1L, dao.batchControlState(202L).executionGeneration)
+            assertEquals(0L, dao.batchControlState(203L).executionGeneration)
+            assertFalse(dao.markBatchRunning(201L, executionGeneration = 0L, updatedAtMillis = 2L))
+            assertFalse(dao.markBatchRunning(202L, executionGeneration = 0L, updatedAtMillis = 2L))
+            assertTrue(dao.markBatchRunning(201L, executionGeneration = 1L, updatedAtMillis = 2L))
+            assertTrue(dao.markBatchRunning(202L, executionGeneration = 1L, updatedAtMillis = 2L))
             val batchId = migratedDatabase.batchAnalysisDao().createBatch(batch(), emptyList())
+            assertEquals(0L, dao.batchControlState(batchId).executionGeneration)
             assertEquals(
                 0L,
-                migratedDatabase.batchAnalysisDao().observeBatch(batchId).first().totalWorkItems,
+                dao.observeBatch(batchId).first().totalWorkItems,
             )
             migratedDatabase.openHelper.readableDatabase
                 .query("PRAGMA table_info(analysis_batches)")

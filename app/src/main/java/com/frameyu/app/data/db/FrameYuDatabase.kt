@@ -393,6 +393,14 @@ abstract class FrameYuDatabase : RoomDatabase() {
                     "ALTER TABLE analysis_batches " +
                         "ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0"
                 )
+                // 隔离升级前无 generation 的遗留 WorkRequest，终态无需创建新执行代。
+                db.execSQL(
+                    """
+                    UPDATE analysis_batches
+                    SET execution_generation = 1
+                    WHERE status IN ('QUEUED', 'RUNNING')
+                    """.trimIndent()
+                )
             }
         }
     }

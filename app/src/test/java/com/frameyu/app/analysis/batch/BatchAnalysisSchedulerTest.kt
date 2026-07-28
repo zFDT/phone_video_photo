@@ -10,6 +10,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -184,9 +185,63 @@ class BatchAnalysisSchedulerTest {
     }
 
     @Test
+    fun `enqueue 复用同 generation 已有 active request`() = runBlocking {
+        val execution = BatchExecutionKey(9L, 0L)
+        val activeRequestId = UUID.randomUUID()
+        val workManager = FakeBatchSchedulerWorkManager().apply {
+            activeExecutions[execution] = activeRequestId
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore())
+
+        val requestId = scheduler.enqueue(9L)
+
+        assertEquals(activeRequestId, requestId)
+        assertTrue(workManager.enqueued.isEmpty())
+    }
+
+    @Test
+    fun `并发 enqueue 失败时复用刚成功的同 generation request`() = runBlocking {
+        val events = mutableListOf<String>()
+        val execution = BatchExecutionKey(10L, 0L)
+        val activeRequestId = UUID.randomUUID()
+        val workManager = FakeBatchSchedulerWorkManager(events).apply {
+            failure = IllegalStateException("重复入队竞态")
+            beforeEnqueue = {
+                activeExecutions[execution] = activeRequestId
+            }
+        }
+        val scheduler = BatchAnalysisScheduler(workManager, RecordingLifecycleStore(events))
+
+        val requestId = scheduler.enqueue(10L)
+
+        assertEquals(activeRequestId, requestId)
+        assertTrue(events.none { event -> event.startsWith("store.needs-attention:10") })
+    }
+
+    @Test
+    fun `resume 对 QUEUED 幂等时复用同 generation active request`() = runBlocking {
+        val events = mutableListOf<String>()
+        val execution = BatchExecutionKey(11L, 0L)
+        val activeRequestId = UUID.randomUUID()
+        val workManager = FakeBatchSchedulerWorkManager(events).apply {
+            activeExecutions[execution] = activeRequestId
+        }
+        val scheduler = BatchAnalysisScheduler(
+            workManager,
+            RecordingLifecycleStore(events, advanceOnResume = false),
+        )
+
+        val requestId = scheduler.resume(11L)
+
+        assertEquals(activeRequestId, requestId)
+        assertEquals(listOf("store.resume:11"), events)
+        assertTrue(workManager.enqueued.isEmpty())
+    }
+
+    @Test
     fun `reconcile 跳过已有 active request 并只补缺失批次`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager().apply {
-            activeExecutions += BatchExecutionKey(2L, 0L)
+            activeExecutions[BatchExecutionKey(2L, 0L)] = UUID.randomUUID()
         }
         val store = RecordingLifecycleStore().apply {
             reconcilableExecutions += listOf(
@@ -207,18 +262,18 @@ class BatchAnalysisSchedulerTest {
     @Test
     fun `reconcile 不把旧 generation 的 active request 当作当前执行`() = runBlocking {
         val workManager = FakeBatchSchedulerWorkManager().apply {
-            activeExecutions += BatchExecutionKey(2L, 0L)
+            activeExecutions[BatchExecutionKey(2L, 0L)] = UUID.randomUUID()
         }
         val store = RecordingLifecycleStore().apply {
-            setGeneration(2L, 2L)
-            reconcilableExecutions += BatchExecutionKey(2L, 2L)
+            setGeneration(2L, 1L)
+            reconcilableExecutions += BatchExecutionKey(2L, 1L)
         }
         val scheduler = BatchAnalysisScheduler(workManager, store)
 
         val result = scheduler.reconcilePendingBatches()
 
         assertEquals(listOf(2L), result.enqueued.keys.toList())
-        assertEquals(2L, workManager.enqueued.single().executionGeneration)
+        assertEquals(1L, workManager.enqueued.single().executionGeneration)
     }
 
     @Test
@@ -355,7 +410,7 @@ private class FakeBatchSchedulerWorkManager(
     private val events: MutableList<String> = mutableListOf(),
 ) : BatchSchedulerWorkManager {
     val enqueued = mutableListOf<EnqueuedBatchWork>()
-    val activeExecutions = linkedSetOf<BatchExecutionKey>()
+    val activeExecutions = linkedMapOf<BatchExecutionKey, UUID>()
     var failure: Exception? = null
     val failuresByBatch = mutableMapOf<Long, Exception>()
     var beforeEnqueue: suspend () -> Unit = {}
@@ -370,22 +425,24 @@ private class FakeBatchSchedulerWorkManager(
         val batchId = request.workSpec.input.getLong(BatchAnalysisWorker.KEY_BATCH_ID, -1L)
         events += "work.enqueue:$uniqueWorkName:$batchId"
         (failuresByBatch[batchId] ?: failure)?.let { throw it }
-        activeExecutions += BatchExecutionKey(
+        val execution = BatchExecutionKey(
             batchId = batchId,
             executionGeneration = request.workSpec.input.getLong(
                 BatchAnalysisWorker.KEY_EXECUTION_GENERATION,
                 -1L,
             ),
         )
+        activeExecutions[execution] = request.id
     }
 
-    override suspend fun activeExecutions(): Set<BatchExecutionKey> =
-        activeExecutions.toSet()
+    override suspend fun activeExecutions(): Map<BatchExecutionKey, UUID> =
+        activeExecutions.toMap()
 }
 
 private class RecordingLifecycleStore(
     private val events: MutableList<String> = mutableListOf(),
     private val afterResume: suspend () -> Unit = {},
+    private val advanceOnResume: Boolean = true,
 ) : BatchAnalysisLifecycleStore {
     val reconcilableExecutions = mutableListOf<BatchExecutionKey>()
     private val generations = mutableMapOf<Long, Long>()
@@ -400,7 +457,7 @@ private class RecordingLifecycleStore(
 
     override suspend fun resumeBatch(batchId: Long) {
         events += "store.resume:$batchId"
-        advanceGeneration(batchId)
+        if (advanceOnResume) advanceGeneration(batchId)
         afterResume()
     }
 
