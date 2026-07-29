@@ -2,6 +2,7 @@ package com.frameyu.app.ui.analysis
 
 import com.frameyu.app.data.db.AnalysisBatchEntity
 import com.frameyu.app.data.db.AnalysisBatchWithProgress
+import com.frameyu.app.data.db.AnalysisWorkItemEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -61,6 +62,55 @@ class BatchAnalysisPresentationTest {
         assertEquals(0f, state.progressFraction)
         assertEquals("等待开始", state.currentStageLabel)
     }
+
+    @Test
+    fun `永久失败工作项在没有当前阶段时仍展示持久化原因`() {
+        val state = batchAnalysisUiState(
+            batchId = 1L,
+            progress = progress(status = "NEEDS_ATTENTION", failed = 1L),
+            currentStage = null,
+            failedItems = listOf(
+                failedItem(
+                    id = 9L,
+                    mediaAssetId = 77L,
+                    stage = "CONDITIONAL_DETECTION",
+                    status = "PERMANENT_FAILED",
+                    message = "模型输出格式不支持",
+                ),
+            ),
+        )
+
+        assertEquals("无正在执行阶段", state.currentStageLabel)
+        assertEquals(1, state.failureItems.size)
+        assertEquals(9L, state.failureItems.single().id)
+        assertEquals(77L, state.failureItems.single().mediaAssetId)
+        assertEquals("目标检测", state.failureItems.single().stageLabel)
+        assertEquals("永久失败", state.failureItems.single().statusLabel)
+        assertEquals("模型输出格式不支持", state.failureItems.single().message)
+    }
+
+    @Test
+    fun `批次操作入口在动作运行时拒绝再次启动`() {
+        assertTrue(canStartBatchAction(actionRunning = false))
+        assertFalse(canStartBatchAction(actionRunning = true))
+    }
+
+    private fun failedItem(
+        id: Long,
+        mediaAssetId: Long,
+        stage: String,
+        status: String,
+        message: String?,
+    ) = AnalysisWorkItemEntity(
+        id = id,
+        batchId = 1L,
+        mediaAssetId = mediaAssetId,
+        stage = stage,
+        status = status,
+        analyzerVersion = "test-v1",
+        errorMessage = message,
+        updatedAtMillis = 1L,
+    )
 
     private fun progress(
         status: String = "QUEUED",

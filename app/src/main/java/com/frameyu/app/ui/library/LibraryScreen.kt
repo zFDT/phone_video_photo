@@ -159,7 +159,7 @@ fun LibraryScreen(
         Button(
             modifier = Modifier.fillMaxWidth(),
             onClick = onOpenDeepAnalysis,
-            enabled = uiState.mediaCount > 0 && !deepAnalysisStarting,
+            enabled = analyzableImageCount(uiState) > 0 && !deepAnalysisStarting,
         ) {
             Text(text = if (deepAnalysisStarting) "正在准备批次…" else "批量深度分析")
         }
@@ -203,6 +203,9 @@ internal fun analysisTaskSummary(tasks: Collection<AnalysisTaskEntity>): Analysi
         running = tasks.count { it.status == "RUNNING" },
         completed = tasks.count { it.status == "COMPLETED" },
     )
+
+internal fun analyzableImageCount(uiState: LibraryUiState): Int =
+    (uiState.mediaCount - uiState.videos.size).coerceAtLeast(0)
 
 @Composable
 private fun VideoAnalysisRow(

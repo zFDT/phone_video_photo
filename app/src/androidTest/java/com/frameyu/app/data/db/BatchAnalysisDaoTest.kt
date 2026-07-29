@@ -26,6 +26,52 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun observeFailedItemsReturnsPersistedFailureDetails() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch(),
+                items = listOf(
+                    workItem(id = 0L, mediaAssetId = 1L, stage = "QUALITY"),
+                    workItem(id = 0L, mediaAssetId = 2L, stage = "CLASSIFICATION"),
+                ),
+            )
+            val items = dao.nextRunnableItems(batchId, limit = 10)
+            dao.markRunning(items[0].id, updatedAtMillis = 2L)
+            dao.failItem(
+                itemId = items[0].id,
+                retryable = true,
+                message = "图片暂时无法读取",
+                updatedAtMillis = 3L,
+            )
+            dao.markRunning(items[1].id, updatedAtMillis = 4L)
+            dao.failItem(
+                itemId = items[1].id,
+                retryable = false,
+                message = "模型输出不受支持",
+                updatedAtMillis = 5L,
+            )
+
+            val failedItems = dao.observeFailedItems(batchId).first()
+
+            assertEquals(2, failedItems.size)
+            assertEquals(listOf(1L, 2L), failedItems.map { it.mediaAssetId })
+            assertEquals(
+                listOf("RETRYABLE_FAILED", "PERMANENT_FAILED"),
+                failedItems.map { it.status },
+            )
+            assertEquals(
+                listOf("图片暂时无法读取", "模型输出不受支持"),
+                failedItems.map { it.errorMessage },
+            )
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun batchWorkItemsSupportCheckpointRetryAndProgress() = runBlocking {
         val database = createDatabase()
         try {

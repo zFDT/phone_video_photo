@@ -107,6 +107,27 @@ data class OrganizationGroup(
     val items: List<OrganizationMediaItem>,
 )
 
+data class DeletionPlanItem(
+    val mediaId: Long,
+    val uri: String,
+)
+
+class DeletionPlan(
+    val visibleFilter: OrganizerFilter,
+    items: List<DeletionPlanItem>,
+) {
+    val items: List<DeletionPlanItem> = items.toList()
+    val mediaIds: Set<Long> = items.mapTo(linkedSetOf(), DeletionPlanItem::mediaId)
+
+    override fun equals(other: Any?): Boolean =
+        this === other ||
+            other is DeletionPlan &&
+            visibleFilter == other.visibleFilter &&
+            items == other.items
+
+    override fun hashCode(): Int = 31 * visibleFilter.hashCode() + items.hashCode()
+}
+
 fun defaultSelectedMediaIds(groups: List<OrganizationGroup>): Set<Long> =
     groups.asSequence()
         .filter { it.filter == OrganizerFilter.EXACT_DUPLICATE }
@@ -124,17 +145,98 @@ fun canSelectForDeletion(group: OrganizationGroup, mediaId: Long): Boolean =
             item.mediaId == mediaId && item.selectableForDeletion
         }
 
+fun revalidateManualGroups(
+    groups: List<OrganizationGroup>,
+    currentAssets: List<MediaAssetEntity>,
+): List<OrganizationGroup> {
+    val currentAssetsById = currentAssets.associateBy(MediaAssetEntity::id)
+    return groups.mapNotNull { group ->
+        val suggestedKeepId = group.suggestedKeepId ?: return@mapNotNull null
+        val validItems = group.items.filter { item ->
+            currentAssetsById[item.mediaId]?.uri == item.uri
+        }
+        val suggestedKeepIsValid = validItems.any { item -> item.mediaId == suggestedKeepId }
+        if (!suggestedKeepIsValid || validItems.size < 2) {
+            null
+        } else {
+            group.copy(items = validItems)
+        }
+    }
+}
+
+fun invalidatedManualMediaIds(
+    groups: List<OrganizationGroup>,
+    currentAssets: List<MediaAssetEntity>,
+): Set<Long> {
+    val validGroupsById = revalidateManualGroups(groups, currentAssets)
+        .associateBy(OrganizationGroup::id)
+    return groups.asSequence()
+        .flatMap { originalGroup ->
+            val validGroup = validGroupsById[originalGroup.id]
+            val validMediaIds = validGroup?.items
+                ?.mapTo(hashSetOf(), OrganizationMediaItem::mediaId)
+                .orEmpty()
+            originalGroup.items.asSequence()
+                .map(OrganizationMediaItem::mediaId)
+                .filterNot(validMediaIds::contains)
+        }
+        .toSet()
+}
+
+fun reconcileSelectedMediaIds(
+    groups: List<OrganizationGroup>,
+    selectedMediaIds: Set<Long>,
+    invalidatedMediaIds: Set<Long> = emptySet(),
+): Set<Long> {
+    val validSelectableIds = groups.asSequence()
+        .flatMap { group ->
+            group.items.asSequence()
+                .filter { item -> canSelectForDeletion(group, item.mediaId) }
+                .map(OrganizationMediaItem::mediaId)
+        }
+        .toSet()
+    return selectedMediaIds
+        .minus(invalidatedMediaIds)
+        .intersect(validSelectableIds)
+}
+
+fun buildDeletionPlan(
+    groups: List<OrganizationGroup>,
+    visibleFilter: OrganizerFilter,
+    selectedMediaIds: Set<Long>,
+): DeletionPlan {
+    val candidates = groups.asSequence()
+        .filter { group -> group.filter == visibleFilter }
+        .flatMap { group ->
+            group.items.asSequence()
+                .filter { item -> item.mediaId in selectedMediaIds }
+                .filter { item -> canSelectForDeletion(group, item.mediaId) }
+                .map { item -> DeletionPlanItem(item.mediaId, item.uri) }
+        }
+        .groupBy(DeletionPlanItem::mediaId)
+        .mapNotNull { (_, items) ->
+            items.firstOrNull()?.takeIf { candidate ->
+                items.all { item -> item.uri == candidate.uri }
+            }
+        }
+        .sortedWith(compareBy(DeletionPlanItem::mediaId).thenBy(DeletionPlanItem::uri))
+    return DeletionPlan(
+        visibleFilter = visibleFilter,
+        items = candidates.toList(),
+    )
+}
+
+fun validateDeletionPlan(
+    plan: DeletionPlan,
+    groups: List<OrganizationGroup>,
+    visibleFilter: OrganizerFilter,
+    selectedMediaIds: Set<Long>,
+): Boolean = plan == buildDeletionPlan(groups, visibleFilter, selectedMediaIds)
+
 fun deletionUrisForVisibleSelection(
     groups: List<OrganizationGroup>,
     visibleFilter: OrganizerFilter,
     selectedMediaIds: Set<Long>,
-): List<String> = groups.asSequence()
-    .filter { it.filter == visibleFilter }
-    .flatMap { group ->
-        group.items.asSequence()
-            .filter { item -> item.mediaId in selectedMediaIds }
-            .filter { item -> canSelectForDeletion(group, item.mediaId) }
-            .map(OrganizationMediaItem::uri)
-    }
-    .distinct()
-    .toList()
+): List<String> = buildDeletionPlan(groups, visibleFilter, selectedMediaIds)
+    .items
+    .map(DeletionPlanItem::uri)

@@ -1,6 +1,7 @@
 package com.frameyu.app.ui.analysis
 
 import com.frameyu.app.data.db.AnalysisBatchWithProgress
+import com.frameyu.app.data.db.AnalysisWorkItemEntity
 
 data class BatchAnalysisActions(
     val canPause: Boolean = false,
@@ -19,13 +20,23 @@ data class BatchAnalysisUiState(
     val failed: Long,
     val currentStageLabel: String,
     val progressFraction: Float,
+    val failureItems: List<BatchFailureUiItem>,
     val actions: BatchAnalysisActions,
+)
+
+data class BatchFailureUiItem(
+    val id: Long,
+    val mediaAssetId: Long,
+    val stageLabel: String,
+    val statusLabel: String,
+    val message: String,
 )
 
 fun batchAnalysisUiState(
     batchId: Long,
     progress: AnalysisBatchWithProgress,
     currentStage: String?,
+    failedItems: List<AnalysisWorkItemEntity> = emptyList(),
 ): BatchAnalysisUiState {
     val status = progress.batch.status
     val processed = progress.completedWorkItems + progress.failedWorkItems
@@ -41,11 +52,18 @@ fun batchAnalysisUiState(
         total = progress.totalWorkItems,
         completed = progress.completedWorkItems,
         failed = progress.failedWorkItems,
-        currentStageLabel = batchStageLabel(currentStage),
+        currentStageLabel = if (currentStage == null && failedItems.isNotEmpty()) {
+            "无正在执行阶段"
+        } else {
+            batchStageLabel(currentStage)
+        },
         progressFraction = progressFraction,
+        failureItems = failedItems.map(AnalysisWorkItemEntity::toFailureUiItem),
         actions = batchActions(status, progress.failedWorkItems),
     )
 }
+
+internal fun canStartBatchAction(actionRunning: Boolean): Boolean = !actionRunning
 
 internal fun batchActions(status: String, failed: Long): BatchAnalysisActions = when (status) {
     "QUEUED", "RUNNING" -> BatchAnalysisActions(canPause = true, canCancel = true)
@@ -76,3 +94,16 @@ internal fun batchStageLabel(stage: String?): String = when (stage) {
     null -> "等待开始"
     else -> stage
 }
+
+private fun AnalysisWorkItemEntity.toFailureUiItem(): BatchFailureUiItem =
+    BatchFailureUiItem(
+        id = id,
+        mediaAssetId = mediaAssetId,
+        stageLabel = batchStageLabel(stage),
+        statusLabel = when (status) {
+            "RETRYABLE_FAILED" -> "可重试失败"
+            "PERMANENT_FAILED" -> "永久失败"
+            else -> status
+        },
+        message = errorMessage?.takeIf(String::isNotBlank) ?: "未记录失败原因",
+    )

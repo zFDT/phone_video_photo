@@ -42,12 +42,22 @@ fun BatchAnalysisScreen(
         .collectAsState(initial = null)
     val currentStage by database.batchAnalysisDao().observeCurrentStage(batchId)
         .collectAsState(initial = null)
+    val failedItems by database.batchAnalysisDao().observeFailedItems(batchId)
+        .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var actionRunning by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    val state = progress?.let { batchAnalysisUiState(batchId, it, currentStage) }
+    val state = progress?.let {
+        batchAnalysisUiState(
+            batchId = batchId,
+            progress = it,
+            currentStage = currentStage,
+            failedItems = failedItems,
+        )
+    }
 
     fun runAction(action: suspend () -> Unit) {
+        if (!canStartBatchAction(actionRunning)) return
         actionRunning = true
         errorMessage = null
         scope.launch {
@@ -95,6 +105,32 @@ fun BatchAnalysisScreen(
                 text = "总体进度：${(state.progressFraction * 100).toInt()}%",
                 style = MaterialTheme.typography.bodyMedium,
             )
+            if (state.failureItems.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "失败详情（${state.failureItems.size}）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                state.failureItems.take(MAX_VISIBLE_FAILURES).forEach { failure ->
+                    Text(
+                        text = "媒体 ${failure.mediaAssetId} · ${failure.stageLabel} · ${failure.statusLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        text = failure.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                    )
+                }
+                if (state.failureItems.size > MAX_VISIBLE_FAILURES) {
+                    Text(
+                        text = "另有 ${state.failureItems.size - MAX_VISIBLE_FAILURES} 项失败",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
             if (state.status == "RUNNING" || state.status == "QUEUED") {
                 Spacer(modifier = Modifier.height(12.dp))
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
@@ -156,3 +192,5 @@ fun BatchAnalysisScreen(
         }
     }
 }
+
+private const val MAX_VISIBLE_FAILURES = 3

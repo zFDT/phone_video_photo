@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,15 +34,20 @@ import androidx.compose.ui.unit.dp
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.organize.ContentHashDuplicateResult
+import com.frameyu.app.organize.DeletionPlan
 import com.frameyu.app.organize.OrganizationGroup
 import com.frameyu.app.organize.OrganizationMediaItem
 import com.frameyu.app.organize.OrganizerFilter
 import com.frameyu.app.organize.OrganizerRepository
 import com.frameyu.app.organize.RecommendationConfidence
 import com.frameyu.app.organize.SimilarMediaDuplicateResult
+import com.frameyu.app.organize.buildDeletionPlan
 import com.frameyu.app.organize.canSelectForDeletion
 import com.frameyu.app.organize.defaultSelectedMediaIds
-import com.frameyu.app.organize.deletionUrisForVisibleSelection
+import com.frameyu.app.organize.invalidatedManualMediaIds
+import com.frameyu.app.organize.reconcileSelectedMediaIds
+import com.frameyu.app.organize.revalidateManualGroups
+import com.frameyu.app.organize.validateDeletionPlan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -63,10 +69,19 @@ fun OrganizerScreen(
     val persistedGroups = remember(assets, qualityResults, candidates) {
         repository.persistedGroups(assets, qualityResults, candidates)
     }
-    var exactGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
-    var similarGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
+    var exactSnapshotGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
+    var similarSnapshotGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
+    val exactGroups = remember(exactSnapshotGroups, assets) {
+        revalidateManualGroups(exactSnapshotGroups, assets)
+    }
+    val similarGroups = remember(similarSnapshotGroups, assets) {
+        revalidateManualGroups(similarSnapshotGroups, assets)
+    }
     val allGroups = remember(persistedGroups, exactGroups, similarGroups) {
         persistedGroups + exactGroups + similarGroups
+    }
+    val invalidManualMediaIds = remember(exactSnapshotGroups, similarSnapshotGroups, assets) {
+        invalidatedManualMediaIds(exactSnapshotGroups + similarSnapshotGroups, assets)
     }
     val assetsById = remember(assets) { assets.associateBy(MediaAssetEntity::id) }
     var activeFilter by remember { mutableStateOf(OrganizerFilter.EXACT_DUPLICATE) }
@@ -79,11 +94,21 @@ fun OrganizerScreen(
         }
     }
     var selectedMediaIds by remember { mutableStateOf(defaultSelectedMediaIds(allGroups)) }
-    val deleteUris = remember(allGroups, activeFilter, selectedMediaIds) {
-        deletionUrisForVisibleSelection(allGroups, activeFilter, selectedMediaIds)
+    LaunchedEffect(allGroups, invalidManualMediaIds) {
+        val reconciled = reconcileSelectedMediaIds(
+            groups = allGroups,
+            selectedMediaIds = selectedMediaIds,
+            invalidatedMediaIds = invalidManualMediaIds,
+        )
+        if (reconciled != selectedMediaIds) {
+            selectedMediaIds = reconciled
+        }
+    }
+    val currentDeletionPlan = remember(allGroups, activeFilter, selectedMediaIds) {
+        buildDeletionPlan(allGroups, activeFilter, selectedMediaIds)
     }
     val scope = rememberCoroutineScope()
-    var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var pendingDeletionPlan by remember { mutableStateOf<DeletionPlan?>(null) }
     var isScanningExact by remember { mutableStateOf(false) }
     var isScanningSimilar by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -124,8 +149,9 @@ fun OrganizerScreen(
                     scope.launch {
                         try {
                             val result = onExactDuplicateScan(assets)
-                            exactGroups = repository.exactGroups(result.groups)
-                            selectedMediaIds += defaultSelectedMediaIds(exactGroups)
+                            val scannedGroups = repository.exactGroups(result.groups)
+                            exactSnapshotGroups = scannedGroups
+                            selectedMediaIds += defaultSelectedMediaIds(scannedGroups)
                             activeFilter = OrganizerFilter.EXACT_DUPLICATE
                             message = scanMessage("完全重复", result.groups.size, result.failedUris.size)
                         } catch (cancelled: CancellationException) {
@@ -147,7 +173,7 @@ fun OrganizerScreen(
                     scope.launch {
                         try {
                             val result = onSimilarDuplicateScan(assets)
-                            similarGroups = repository.similarGroups(result.groups)
+                            similarSnapshotGroups = repository.similarGroups(result.groups)
                             activeFilter = OrganizerFilter.SIMILAR_MEDIA
                             message = scanMessage("相似媒体", result.groups.size, result.failedUris.size)
                         } catch (cancelled: CancellationException) {
@@ -227,38 +253,44 @@ fun OrganizerScreen(
             }
             Button(
                 modifier = Modifier.weight(1f),
-                onClick = { showDeleteConfirmation = true },
-                enabled = deleteUris.isNotEmpty(),
+                onClick = { pendingDeletionPlan = currentDeletionPlan },
+                enabled = currentDeletionPlan.items.isNotEmpty(),
             ) {
-                Text(text = "确认删除 ${deleteUris.size} 项")
+                Text(text = "确认删除 ${currentDeletionPlan.items.size} 项")
             }
         }
     }
 
-    if (showDeleteConfirmation) {
+    pendingDeletionPlan?.let { plan ->
         AlertDialog(
-            onDismissRequest = { showDeleteConfirmation = false },
-            title = { Text(text = "确认删除 ${deleteUris.size} 项？") },
+            onDismissRequest = { pendingDeletionPlan = null },
+            title = { Text(text = "确认删除 ${plan.items.size} 项？") },
             text = {
-                Text(text = "仅处理当前“${filterLabel(activeFilter)}”筛选中已勾选的媒体；建议保留项已锁定。")
+                Text(text = "仅处理“${filterLabel(plan.visibleFilter)}”筛选中冻结的媒体；建议保留项已锁定。")
             },
             confirmButton = {
                 Button(onClick = {
-                    showDeleteConfirmation = false
-                    scope.launch {
-                        try {
-                            repository.delete(deleteUris.map(Uri::parse))
-                            selectedMediaIds -= deleteUris.mapTo(mutableSetOf()) { uri ->
-                                allGroups.asSequence()
-                                    .flatMap(OrganizationGroup::items)
-                                    .first { item -> item.uri == uri }
-                                    .mediaId
+                    if (!validateDeletionPlan(
+                            plan = plan,
+                            groups = allGroups,
+                            visibleFilter = activeFilter,
+                            selectedMediaIds = selectedMediaIds,
+                        )
+                    ) {
+                        pendingDeletionPlan = null
+                        message = "结果已变化，请重新确认"
+                    } else {
+                        pendingDeletionPlan = null
+                        scope.launch {
+                            try {
+                                repository.delete(plan.items.map { item -> Uri.parse(item.uri) })
+                                selectedMediaIds -= plan.mediaIds
+                                message = "已提交 ${plan.items.size} 项到系统最近删除"
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                message = "删除请求失败：${error.message ?: "未知错误"}"
                             }
-                            message = "已提交 ${deleteUris.size} 项到系统最近删除"
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            message = "删除请求失败：${error.message ?: "未知错误"}"
                         }
                     }
                 }) {
@@ -266,7 +298,7 @@ fun OrganizerScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirmation = false }) {
+                TextButton(onClick = { pendingDeletionPlan = null }) {
                     Text(text = "取消")
                 }
             },

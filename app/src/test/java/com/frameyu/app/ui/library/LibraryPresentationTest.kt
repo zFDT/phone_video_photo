@@ -1,6 +1,7 @@
 package com.frameyu.app.ui.library
 
 import com.frameyu.app.data.db.AnalysisTaskEntity
+import com.frameyu.app.data.db.MediaAssetEntity
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -36,4 +37,33 @@ class LibraryPresentationTest {
 
         assertEquals(AnalysisTaskSummary(4, 1, 1, 1), analysisTaskSummary(tasks))
     }
+
+    @Test
+    fun `深度分析只在媒体库存在图片时启用`() {
+        val videos = listOf(video(1L), video(2L))
+
+        assertEquals(
+            0,
+            analyzableImageCount(LibraryUiState(mediaCount = 2, videos = videos)),
+        )
+        assertEquals(
+            1,
+            analyzableImageCount(LibraryUiState(mediaCount = 3, videos = videos)),
+        )
+    }
+
+    private fun video(id: Long) = MediaAssetEntity(
+        id = id,
+        uri = "content://video/$id",
+        mimeType = "video/mp4",
+        takenAtMillis = 0L,
+        durationMillis = 1_000L,
+        width = 100,
+        height = 100,
+        rotationDegrees = 0,
+        sizeBytes = 1L,
+        isHdr = false,
+        relativePath = null,
+        lastModifiedMillis = 0L,
+    )
 }
