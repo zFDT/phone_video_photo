@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
 /** 按媒体资源管理分析候选帧。 */
 @Dao
 interface AnalysisCandidateDao {
+    @Query("SELECT * FROM analysis_candidates ORDER BY score DESC, id")
+    fun observeAll(): Flow<List<AnalysisCandidateEntity>>
+
     @Query("SELECT * FROM analysis_candidates WHERE media_asset_id = :mediaAssetId ORDER BY score DESC")
     suspend fun getByMediaAssetId(mediaAssetId: Long): List<AnalysisCandidateEntity>
 

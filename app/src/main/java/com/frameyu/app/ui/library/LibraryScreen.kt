@@ -37,6 +37,9 @@ fun LibraryScreen(
     onStartBatchAnalysis: () -> Unit = {},
     onCancelBatchAnalysis: () -> Unit = {},
     onOpenCandidates: (MediaAssetEntity) -> Unit = {},
+    onOpenDeepAnalysis: () -> Unit = {},
+    deepAnalysisStarting: Boolean = false,
+    deepAnalysisMessage: String? = null,
     onOpenOrganizer: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
 ) {
@@ -152,6 +155,24 @@ fun LibraryScreen(
             onClick = onSelectMedia,
         ) {
             Text(text = "选择媒体")
+        }
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onOpenDeepAnalysis,
+            enabled = uiState.mediaCount > 0 && !deepAnalysisStarting,
+        ) {
+            Text(text = if (deepAnalysisStarting) "正在准备批次…" else "批量深度分析")
+        }
+        deepAnalysisMessage?.let {
+            Text(
+                text = it,
+                color = if ("失败" in it) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         OutlinedButton(
             modifier = Modifier.align(Alignment.CenterHorizontally),

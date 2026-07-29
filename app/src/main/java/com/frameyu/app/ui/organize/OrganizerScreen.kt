@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -28,37 +30,59 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.frameyu.app.album.AlbumCategory
-import com.frameyu.app.album.AlbumClassifier
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.organize.ContentHashDuplicateResult
-import com.frameyu.app.organize.DuplicateDetector
-import com.frameyu.app.organize.DuplicateGroup
+import com.frameyu.app.organize.OrganizationGroup
+import com.frameyu.app.organize.OrganizationMediaItem
+import com.frameyu.app.organize.OrganizerFilter
 import com.frameyu.app.organize.OrganizerRepository
+import com.frameyu.app.organize.RecommendationConfidence
 import com.frameyu.app.organize.SimilarMediaDuplicateResult
+import com.frameyu.app.organize.canSelectForDeletion
+import com.frameyu.app.organize.defaultSelectedMediaIds
+import com.frameyu.app.organize.deletionUrisForVisibleSelection
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-/** 相册整理页：只展示候选，删除必须经过用户明确确认。 */
+/** 汇总 Room 分析结果和手动重复扫描结果；删除必须逐媒体勾选并再次确认。 */
 @Composable
 fun OrganizerScreen(
     database: FrameYuDatabase,
     repository: OrganizerRepository,
     onExactDuplicateScan: suspend (List<MediaAssetEntity>) -> ContentHashDuplicateResult,
     onSimilarDuplicateScan: suspend (List<MediaAssetEntity>) -> SimilarMediaDuplicateResult,
+    onOpenVideoCandidates: (MediaAssetEntity) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val assets by database.mediaAssetDao().observeAll().collectAsState(initial = emptyList())
-    val metadataGroups = remember(assets) { repository.duplicateCandidates(assets) }
-    var exactResult by remember { mutableStateOf<ContentHashDuplicateResult?>(null) }
-    var similarResult by remember { mutableStateOf<SimilarMediaDuplicateResult?>(null) }
-    val displayGroups = similarResult?.groups ?: exactResult?.groups ?: metadataGroups
-    val classifier = remember { AlbumClassifier() }
-    val categories = remember(assets) {
-        assets.groupingBy { classifier.classify(it).first() }.eachCount()
+    val qualityResults by database.batchAnalysisDao().observeQualityResults()
+        .collectAsState(initial = emptyList())
+    val candidates by database.analysisCandidateDao().observeAll()
+        .collectAsState(initial = emptyList())
+    val persistedGroups = remember(assets, qualityResults, candidates) {
+        repository.persistedGroups(assets, qualityResults, candidates)
+    }
+    var exactGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
+    var similarGroups by remember { mutableStateOf(emptyList<OrganizationGroup>()) }
+    val allGroups = remember(persistedGroups, exactGroups, similarGroups) {
+        persistedGroups + exactGroups + similarGroups
+    }
+    val assetsById = remember(assets) { assets.associateBy(MediaAssetEntity::id) }
+    var activeFilter by remember { mutableStateOf(OrganizerFilter.EXACT_DUPLICATE) }
+    val visibleGroups = remember(allGroups, activeFilter) {
+        allGroups.filter { group -> group.filter == activeFilter }
+    }
+    val filterCounts = remember(allGroups) {
+        OrganizerFilter.entries.associateWith { filter ->
+            allGroups.count { group -> group.filter == filter }
+        }
+    }
+    var selectedMediaIds by remember { mutableStateOf(defaultSelectedMediaIds(allGroups)) }
+    val deleteUris = remember(allGroups, activeFilter, selectedMediaIds) {
+        deletionUrisForVisibleSelection(allGroups, activeFilter, selectedMediaIds)
     }
     val scope = rememberCoroutineScope()
-    var selectedKeys by remember { mutableStateOf(emptySet<String>()) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var isScanningExact by remember { mutableStateOf(false) }
     var isScanningSimilar by remember { mutableStateOf(false) }
@@ -75,101 +99,106 @@ fun OrganizerScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onBack) { Text(text = "返回") }
-            Text(text = "相册整理", style = MaterialTheme.typography.headlineSmall)
+            Text(text = "统一整理", style = MaterialTheme.typography.headlineSmall)
             Text(text = "${assets.size} 项", style = MaterialTheme.typography.bodySmall)
         }
         Text(
-            text = "截图 ${categories[AlbumCategory.SCREENSHOT] ?: 0} · 录屏 ${categories[AlbumCategory.SCREEN_RECORDING] ?: 0} · 重复组 ${displayGroups.size}",
+            text = "这里仅生成建议，不会自动删除任何媒体。",
             style = MaterialTheme.typography.bodySmall,
         )
-        Text(
-            text = when {
-                similarResult != null ->
-                    "已完成相似照片扫描；只会处理你勾选并确认的项目。"
-                exactResult != null ->
-                    "已完成完全重复扫描；只会处理你勾选并确认的项目。"
-                else ->
-                    "当前显示的是元数据候选；可进一步扫描完全重复或相似照片。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(
-                onClick = {
-                    exactResult = null
-                    similarResult = null
-                    selectedKeys = emptySet()
-                    isScanningExact = true
-                    scope.launch {
-                        runCatching { onExactDuplicateScan(assets) }
-                            .onSuccess {
-                                exactResult = it
-                                selectedKeys = emptySet()
-                                message = if (it.failedUris.isEmpty()) {
-                                    "完全重复扫描完成：发现 ${it.groups.size} 组"
-                                } else {
-                                    "完全重复扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
-                                }
-                            }
-                            .onFailure { message = "完全重复扫描失败：${it.message ?: "未知错误"}" }
-                        isScanningExact = false
-                    }
-                },
-                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
-            ) { Text(text = if (isScanningExact) "扫描中…" else "扫描完全重复") }
-            OutlinedButton(
-                onClick = {
-                    exactResult = null
-                    similarResult = null
-                    selectedKeys = emptySet()
-                    isScanningSimilar = true
-                    scope.launch {
-                        runCatching { onSimilarDuplicateScan(assets) }
-                            .onSuccess {
-                                similarResult = it
-                                selectedKeys = emptySet()
-                                message = if (it.failedUris.isEmpty()) {
-                                    "相似照片扫描完成：发现 ${it.groups.size} 组"
-                                } else {
-                                    "相似照片扫描完成：发现 ${it.groups.size} 组，${it.failedUris.size} 项读取失败"
-                                }
-                            }
-                            .onFailure { message = "相似照片扫描失败：${it.message ?: "未知错误"}" }
-                        isScanningSimilar = false
-                    }
-                },
-                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
-            ) { Text(text = if (isScanningSimilar) "扫描中…" else "扫描相似照片") }
-            if (exactResult != null || similarResult != null) {
-                TextButton(onClick = {
-                    exactResult = null
-                    similarResult = null
-                    selectedKeys = emptySet()
-                }) {
-                    Text(text = "返回候选")
-                }
+        Spacer(modifier = Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(OrganizerFilter.entries, key = OrganizerFilter::name) { filter ->
+                FilterChip(
+                    selected = activeFilter == filter,
+                    onClick = { activeFilter = filter },
+                    label = { Text(text = "${filterLabel(filter)} ${filterCounts[filter] ?: 0}") },
+                )
             }
         }
-        message?.let { Text(text = it, color = MaterialTheme.colorScheme.primary) }
-        Spacer(modifier = Modifier.height(12.dp))
-        if (displayGroups.isEmpty()) {
-            Text(text = "暂未发现可整理的重复媒体。", modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    isScanningExact = true
+                    scope.launch {
+                        try {
+                            val result = onExactDuplicateScan(assets)
+                            exactGroups = repository.exactGroups(result.groups)
+                            selectedMediaIds += defaultSelectedMediaIds(exactGroups)
+                            activeFilter = OrganizerFilter.EXACT_DUPLICATE
+                            message = scanMessage("完全重复", result.groups.size, result.failedUris.size)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            message = "完全重复扫描失败：${error.message ?: "未知错误"}"
+                        } finally {
+                            isScanningExact = false
+                        }
+                    }
+                },
+                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
+            ) {
+                Text(text = if (isScanningExact) "扫描中…" else "扫描完全重复")
+            }
+            OutlinedButton(
+                onClick = {
+                    isScanningSimilar = true
+                    scope.launch {
+                        try {
+                            val result = onSimilarDuplicateScan(assets)
+                            similarGroups = repository.similarGroups(result.groups)
+                            activeFilter = OrganizerFilter.SIMILAR_MEDIA
+                            message = scanMessage("相似媒体", result.groups.size, result.failedUris.size)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            message = "相似媒体扫描失败：${error.message ?: "未知错误"}"
+                        } finally {
+                            isScanningSimilar = false
+                        }
+                    }
+                },
+                enabled = assets.isNotEmpty() && !isScanningExact && !isScanningSimilar,
+            ) {
+                Text(text = if (isScanningSimilar) "扫描中…" else "扫描相似媒体")
+            }
+        }
+        message?.let {
+            Text(
+                text = it,
+                color = if ("失败" in it) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        if (visibleGroups.isEmpty()) {
+            Text(
+                text = emptyStateText(activeFilter),
+                modifier = Modifier.weight(1f),
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(displayGroups, key = DuplicateGroup::duplicateKey) { group ->
-                    val selected = group.duplicateKey in selectedKeys
-                    DuplicateGroupRow(
+                items(visibleGroups, key = OrganizationGroup::id) { group ->
+                    OrganizationGroupCard(
                         group = group,
-                        selected = selected,
-                        onToggle = {
-                            selectedKeys = if (selected) {
-                                selectedKeys - group.duplicateKey
-                            } else {
-                                selectedKeys + group.duplicateKey
+                        selectedMediaIds = selectedMediaIds,
+                        onToggle = { mediaId ->
+                            if (canSelectForDeletion(group, mediaId)) {
+                                selectedMediaIds = if (mediaId in selectedMediaIds) {
+                                    selectedMediaIds - mediaId
+                                } else {
+                                    selectedMediaIds + mediaId
+                                }
                             }
+                        },
+                        onOpenVideoCandidates = {
+                            group.items.firstOrNull()?.mediaId
+                                ?.let(assetsById::get)
+                                ?.let(onOpenVideoCandidates)
                         },
                     )
                 }
@@ -181,69 +210,163 @@ fun OrganizerScreen(
         ) {
             OutlinedButton(
                 modifier = Modifier.weight(1f),
-                onClick = { selectedKeys = displayGroups.map { it.duplicateKey }.toSet() },
-                enabled = displayGroups.isNotEmpty(),
-            ) { Text(text = "全选重复组") }
+                onClick = {
+                    selectedMediaIds += visibleGroups.asSequence()
+                        .flatMap { group ->
+                            group.items.asSequence()
+                                .filter { item -> canSelectForDeletion(group, item.mediaId) }
+                                .map(OrganizationMediaItem::mediaId)
+                        }
+                        .toSet()
+                },
+                enabled = visibleGroups.any { group ->
+                    group.items.any { item -> canSelectForDeletion(group, item.mediaId) }
+                },
+            ) {
+                Text(text = "选择当前可删项")
+            }
             Button(
                 modifier = Modifier.weight(1f),
                 onClick = { showDeleteConfirmation = true },
-                enabled = selectedKeys.isNotEmpty(),
-            ) { Text(text = "确认整理") }
+                enabled = deleteUris.isNotEmpty(),
+            ) {
+                Text(text = "确认删除 ${deleteUris.size} 项")
+            }
         }
     }
 
     if (showDeleteConfirmation) {
-        val selectedGroups = displayGroups.filter { it.duplicateKey in selectedKeys }
-        val deleteUris = selectedGroups.flatMap { group ->
-            group.assets.filter { it.id != group.suggestedKeep.id }.map { Uri.parse(it.uri) }
-        }
         AlertDialog(
             onDismissRequest = { showDeleteConfirmation = false },
-            title = { Text(text = "确认整理重复媒体？") },
-            text = { Text(text = "将把 ${deleteUris.size} 项移入系统最近删除；建议保留项不会处理。") },
+            title = { Text(text = "确认删除 ${deleteUris.size} 项？") },
+            text = {
+                Text(text = "仅处理当前“${filterLabel(activeFilter)}”筛选中已勾选的媒体；建议保留项已锁定。")
+            },
             confirmButton = {
                 Button(onClick = {
                     showDeleteConfirmation = false
                     scope.launch {
-                        repository.delete(deleteUris)
-                        selectedKeys = emptySet()
-                        message = "已提交 ${deleteUris.size} 项到系统回收区"
+                        try {
+                            repository.delete(deleteUris.map(Uri::parse))
+                            selectedMediaIds -= deleteUris.mapTo(mutableSetOf()) { uri ->
+                                allGroups.asSequence()
+                                    .flatMap(OrganizationGroup::items)
+                                    .first { item -> item.uri == uri }
+                                    .mediaId
+                            }
+                            message = "已提交 ${deleteUris.size} 项到系统最近删除"
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            message = "删除请求失败：${error.message ?: "未知错误"}"
+                        }
                     }
-                }) { Text(text = "确认") }
+                }) {
+                    Text(text = "确认")
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirmation = false }) { Text(text = "取消") }
+                TextButton(onClick = { showDeleteConfirmation = false }) {
+                    Text(text = "取消")
+                }
             },
         )
     }
 }
 
 @Composable
-private fun DuplicateGroupRow(
-    group: DuplicateGroup,
-    selected: Boolean,
-    onToggle: () -> Unit,
+private fun OrganizationGroupCard(
+    group: OrganizationGroup,
+    selectedMediaIds: Set<Long>,
+    onToggle: (Long) -> Unit,
+    onOpenVideoCandidates: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(checked = selected, onCheckedChange = { onToggle() })
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = "重复 ${group.assets.size} 项", style = MaterialTheme.typography.titleSmall)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
             Text(
-                text = "保留：${displayName(group.suggestedKeep)}",
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
+                text = groupTitle(group),
+                style = MaterialTheme.typography.titleSmall,
             )
-            Text(
-                text = group.assets.joinToString("、") { displayName(it) },
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-            )
+            group.confidence?.let { confidence ->
+                Text(
+                    text = confidenceLabel(confidence),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        group.items.forEach { item ->
+            val locked = item.mediaId == group.suggestedKeepId || !item.selectableForDeletion
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = !locked && item.mediaId in selectedMediaIds,
+                    onCheckedChange = { onToggle(item.mediaId) },
+                    enabled = !locked,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = item.label, maxLines = 1)
+                    val detail = when {
+                        item.mediaId == group.suggestedKeepId &&
+                            group.filter != OrganizerFilter.VIDEO_HIGHLIGHT -> "建议保留 · 已锁定"
+                        item.detail != null -> item.detail
+                        locked -> "仅供查看，不会删除"
+                        else -> "由你决定是否删除"
+                    }
+                    Text(text = detail, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        if (group.filter == OrganizerFilter.VIDEO_HIGHLIGHT) {
+            TextButton(onClick = onOpenVideoCandidates) {
+                Text(text = "查看精彩候选帧")
+            }
         }
     }
 }
 
-private fun displayName(asset: MediaAssetEntity): String =
-    asset.uri.substringAfterLast('/').ifBlank { "媒体 ${asset.id}" }
+private fun groupTitle(group: OrganizationGroup): String = when (group.filter) {
+    OrganizerFilter.EXACT_DUPLICATE -> "完全重复 · ${group.items.size} 项"
+    OrganizerFilter.SIMILAR_MEDIA -> "相似媒体 · ${group.items.size} 项"
+    OrganizerFilter.LOW_QUALITY -> "低质量建议"
+    OrganizerFilter.SCREENSHOT -> "截图"
+    OrganizerFilter.SCREEN_RECORDING -> "录屏"
+    OrganizerFilter.VIDEO_HIGHLIGHT -> "视频精彩候选"
+}
+
+private fun filterLabel(filter: OrganizerFilter): String = when (filter) {
+    OrganizerFilter.EXACT_DUPLICATE -> "完全重复"
+    OrganizerFilter.SIMILAR_MEDIA -> "相似"
+    OrganizerFilter.LOW_QUALITY -> "低质量"
+    OrganizerFilter.SCREENSHOT -> "截图"
+    OrganizerFilter.SCREEN_RECORDING -> "录屏"
+    OrganizerFilter.VIDEO_HIGHLIGHT -> "视频精彩"
+}
+
+private fun confidenceLabel(confidence: RecommendationConfidence): String = when (confidence) {
+    RecommendationConfidence.HIGH -> "高置信"
+    RecommendationConfidence.MEDIUM -> "中置信"
+    RecommendationConfidence.LOW -> "低置信"
+}
+
+private fun emptyStateText(filter: OrganizerFilter): String = when (filter) {
+    OrganizerFilter.EXACT_DUPLICATE -> "暂无完全重复结果；可点击“扫描完全重复”补充。"
+    OrganizerFilter.SIMILAR_MEDIA -> "暂无相似结果；可点击“扫描相似媒体”补充。"
+    OrganizerFilter.LOW_QUALITY -> "已持久化分析结果中暂无低质量建议。"
+    OrganizerFilter.SCREENSHOT -> "媒体索引中暂无截图。"
+    OrganizerFilter.SCREEN_RECORDING -> "媒体索引中暂无录屏。"
+    OrganizerFilter.VIDEO_HIGHLIGHT -> "暂无已保存的视频精彩候选。"
+}
+
+private fun scanMessage(type: String, groupCount: Int, failedCount: Int): String =
+    if (failedCount == 0) {
+        "$type 扫描完成：发现 $groupCount 组"
+    } else {
+        "$type 扫描完成：发现 $groupCount 组，$failedCount 项读取失败"
+    }

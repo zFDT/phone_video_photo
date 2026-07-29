@@ -20,6 +20,9 @@ interface MediaAssetDao {
     @Query("SELECT COUNT(*) FROM media_assets")
     suspend fun count(): Int
 
+    @Query("SELECT * FROM media_assets ORDER BY taken_at_millis DESC")
+    suspend fun getAll(): List<MediaAssetEntity>
+
     @Query("SELECT * FROM media_assets WHERE mime_type LIKE 'video/%' ORDER BY taken_at_millis DESC")
     fun observeVideos(): Flow<List<MediaAssetEntity>>
 

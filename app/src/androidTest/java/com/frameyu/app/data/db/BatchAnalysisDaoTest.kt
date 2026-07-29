@@ -83,7 +83,7 @@ class BatchAnalysisDaoTest {
                 progress.pendingWorkItems,
                 progress.failedWorkItems,
             )
-            assertEquals(listOf(3L, 1L, 0L, 2L, 0L), counts)
+            assertEquals(listOf(3L, 1L, 0L, 1L, 1L), counts)
         } finally {
             database.close()
         }

@@ -35,6 +35,16 @@ abstract class BatchAnalysisDao {
         return batchId
     }
 
+    @Query(
+        """
+        SELECT * FROM analysis_batches
+        WHERE status IN ('QUEUED', 'RUNNING', 'PAUSED', 'NEEDS_ATTENTION')
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    abstract suspend fun latestOpenBatch(): AnalysisBatchEntity?
+
     suspend fun nextRunnableItems(batchId: Long, limit: Int): List<AnalysisWorkItemEntity> =
         nextRunnableItems(batchId, afterId = 0L, limit = limit)
 
@@ -606,10 +616,13 @@ abstract class BatchAnalysisDao {
                COALESCE(SUM(CASE WHEN w.status = 'RUNNING' THEN 1 ELSE 0 END), 0)
                    AS running_work_items,
                COALESCE(SUM(CASE
-                   WHEN w.status IN ('PENDING', 'PAUSED', 'RETRYABLE_FAILED') THEN 1
+                   WHEN w.status IN ('PENDING', 'PAUSED') THEN 1
                    ELSE 0
                END), 0) AS pending_work_items,
-               COALESCE(SUM(CASE WHEN w.status = 'PERMANENT_FAILED' THEN 1 ELSE 0 END), 0)
+               COALESCE(SUM(CASE
+                   WHEN w.status IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED') THEN 1
+                   ELSE 0
+               END), 0)
                    AS failed_work_items
         FROM analysis_batches AS b
         LEFT JOIN analysis_work_items AS w ON w.batch_id = b.id
@@ -618,6 +631,24 @@ abstract class BatchAnalysisDao {
         """
     )
     abstract fun observeBatch(batchId: Long): Flow<AnalysisBatchWithProgress>
+
+    @Query(
+        """
+        SELECT stage FROM analysis_work_items
+        WHERE batch_id = :batchId
+          AND status IN ('RUNNING', 'PENDING', 'PAUSED', 'RETRYABLE_FAILED')
+        ORDER BY CASE status
+            WHEN 'RUNNING' THEN 0
+            WHEN 'PAUSED' THEN 1
+            ELSE 2
+        END, id
+        LIMIT 1
+        """
+    )
+    abstract fun observeCurrentStage(batchId: Long): Flow<String?>
+
+    @Query("SELECT * FROM media_quality_results ORDER BY id DESC")
+    abstract fun observeQualityResults(): Flow<List<MediaQualityResultEntity>>
 
     @Query(
         """

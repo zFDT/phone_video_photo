@@ -13,11 +13,15 @@ import com.frameyu.app.analysis.ImageAnalysisCoordinator
 import com.frameyu.app.analysis.ImageAnalysisModelShas
 import com.frameyu.app.analysis.RoomImageAnalysisStore
 import com.frameyu.app.analysis.batch.BatchAnalysisRunner
+import com.frameyu.app.analysis.batch.BatchAnalysisCoordinator
 import com.frameyu.app.analysis.batch.BatchAnalysisScheduler
 import com.frameyu.app.analysis.batch.BatchAnalysisStore
 import com.frameyu.app.analysis.batch.BatchAnalysisWorker
 import com.frameyu.app.analysis.batch.BatchAnalysisWorkerFactory
+import com.frameyu.app.analysis.batch.AnalysisStage
+import com.frameyu.app.analysis.batch.AnalyzerVersion
 import com.frameyu.app.analysis.batch.ImageBatchWorkItemCoordinator
+import com.frameyu.app.analysis.batch.RoomBatchAnalysisCreationStore
 import com.frameyu.app.analysis.batch.RoomBatchAnalysisStore
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.media.MediaStoreRepository
@@ -63,6 +67,43 @@ class FrameYuApplication : Application(), Configuration.Provider {
         LazyThreadSafetyMode.SYNCHRONIZED,
     ) {
         BatchAnalysisScheduler.from(this, batchAnalysisStore)
+    }
+
+    val batchAnalysisCoordinator: BatchAnalysisCoordinator by lazy(
+        LazyThreadSafetyMode.SYNCHRONIZED,
+    ) {
+        BatchAnalysisCoordinator(
+            store = RoomBatchAnalysisCreationStore(
+                mediaAssetDao = database.mediaAssetDao(),
+                batchAnalysisDao = database.batchAnalysisDao(),
+            ),
+            enqueue = { batchId ->
+                batchAnalysisWorkScheduler.enqueue(batchId)
+                Unit
+            },
+            analyzerVersions = mapOf(
+                AnalysisStage.QUALITY to AnalyzerVersion.create(
+                    AnalysisStage.QUALITY,
+                    modelSha256 = null,
+                    policyVersion = "image-quality-v1",
+                ),
+                AnalysisStage.CLASSIFICATION to AnalyzerVersion.create(
+                    AnalysisStage.CLASSIFICATION,
+                    modelSha256 = classifierModel.sha256,
+                    policyVersion = "image-classification-v1",
+                ),
+                AnalysisStage.EMBEDDING to AnalyzerVersion.create(
+                    AnalysisStage.EMBEDDING,
+                    modelSha256 = embedderModel.sha256,
+                    policyVersion = "image-embedding-v1",
+                ),
+                AnalysisStage.CONDITIONAL_DETECTION to AnalyzerVersion.create(
+                    AnalysisStage.CONDITIONAL_DETECTION,
+                    modelSha256 = detectorModel.sha256,
+                    policyVersion = "image-detection-policy-v1",
+                ),
+            ),
+        )
     }
 
     lateinit var mediaStoreRepository: MediaStoreRepository

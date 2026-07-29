@@ -27,6 +27,7 @@ import com.frameyu.app.ui.library.LibraryScreen
 import com.frameyu.app.ui.library.LibraryViewModel
 import com.frameyu.app.ui.library.CandidateBrowserScreen
 import com.frameyu.app.ui.library.CandidateDetailScreen
+import com.frameyu.app.ui.analysis.BatchAnalysisScreen
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.export.StillImageExporter
@@ -45,6 +46,7 @@ import com.frameyu.app.settings.SettingsSnapshot
 import com.frameyu.app.settings.SettingsStore
 import com.frameyu.app.ui.settings.SettingsScreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
@@ -66,6 +68,10 @@ class MainActivity : ComponentActivity() {
     private var hasMediaPermission = mutableStateOf(false)
     private var selectedCandidateMedia = mutableStateOf<MediaAssetEntity?>(null)
     private var selectedCandidate = mutableStateOf<AnalysisCandidateEntity?>(null)
+    private var returnToOrganizerAfterCandidates = mutableStateOf(false)
+    private var selectedBatchId = mutableStateOf<Long?>(null)
+    private var batchAnalysisStarting = mutableStateOf(false)
+    private var batchAnalysisMessage = mutableStateOf<String?>(null)
     private var showOrganizer = mutableStateOf(false)
     private var showSettings = mutableStateOf(false)
     private var settingsSnapshot = mutableStateOf(SettingsSnapshot())
@@ -112,7 +118,25 @@ class MainActivity : ComponentActivity() {
                                     similarMediaDuplicateDetector.detect(similarPhotoCandidates(assets))
                                 }
                             },
+                            onOpenVideoCandidates = {
+                                showOrganizer.value = false
+                                returnToOrganizerAfterCandidates.value = true
+                                selectedCandidateMedia.value = it
+                            },
                             onBack = { showOrganizer.value = false },
+                        )
+                    } else if (candidateMedia == null && selectedBatchId.value != null) {
+                        val batchId = checkNotNull(selectedBatchId.value)
+                        val frameYuApplication = application as FrameYuApplication
+                        BatchAnalysisScreen(
+                            batchId = batchId,
+                            database = frameYuApplication.database,
+                            scheduler = frameYuApplication.batchAnalysisWorkScheduler,
+                            onOpenOrganizer = {
+                                selectedBatchId.value = null
+                                showOrganizer.value = true
+                            },
+                            onBack = { selectedBatchId.value = null },
                         )
                     } else if (candidateMedia == null && showSettings.value) {
                         SettingsScreen(
@@ -129,7 +153,13 @@ class MainActivity : ComponentActivity() {
                             onStartAnalysis = libraryViewModel::startVideoAnalysis,
                             onStartBatchAnalysis = libraryViewModel::startBatchVideoAnalysis,
                             onCancelBatchAnalysis = libraryViewModel::cancelBatchVideoAnalysis,
-                            onOpenCandidates = { selectedCandidateMedia.value = it },
+                            onOpenCandidates = {
+                                returnToOrganizerAfterCandidates.value = false
+                                selectedCandidateMedia.value = it
+                            },
+                            onOpenDeepAnalysis = ::openDeepAnalysis,
+                            deepAnalysisStarting = batchAnalysisStarting.value,
+                            deepAnalysisMessage = batchAnalysisMessage.value,
                             onOpenOrganizer = { showOrganizer.value = true },
                             onOpenSettings = { showSettings.value = true },
                             hasMediaReadPermission = hasMediaPermission.value,
@@ -156,6 +186,10 @@ class MainActivity : ComponentActivity() {
                                 onBack = {
                                     selectedCandidate.value = null
                                     selectedCandidateMedia.value = null
+                                    if (returnToOrganizerAfterCandidates.value) {
+                                        returnToOrganizerAfterCandidates.value = false
+                                        showOrganizer.value = true
+                                    }
                                 },
                             )
                         } else {
@@ -190,6 +224,27 @@ class MainActivity : ComponentActivity() {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         permissionLauncher.launch(permissions)
+    }
+
+    private fun openDeepAnalysis() {
+        if (batchAnalysisStarting.value) return
+        batchAnalysisStarting.value = true
+        batchAnalysisMessage.value = null
+        lifecycleScope.launch {
+            try {
+                val batchId = (application as FrameYuApplication)
+                    .batchAnalysisCoordinator
+                    .openOrCreateBatch()
+                selectedBatchId.value = batchId
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                batchAnalysisMessage.value =
+                    "批量深度分析启动失败：${error.message ?: "未知错误"}"
+            } finally {
+                batchAnalysisStarting.value = false
+            }
+        }
     }
 
     private suspend fun moveToSystemTrash(uris: List<Uri>) = withContext(Dispatchers.IO) {
