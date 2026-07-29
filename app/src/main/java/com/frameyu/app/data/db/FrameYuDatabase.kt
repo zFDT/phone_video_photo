@@ -119,6 +119,8 @@ data class AnalysisTaskEntity(
     val sampledFrameCount: Long = 0L,
     @ColumnInfo(name = "total_sample_count")
     val totalSampleCount: Long = 0L,
+    @ColumnInfo(name = "execution_generation", defaultValue = "0")
+    val executionGeneration: Long = 0L,
 )
 
 /** 保存和读取任务进度。 */
@@ -152,7 +154,97 @@ interface AnalysisTaskDao {
     @Query(
         """
         UPDATE analysis_tasks
+        SET status = 'RUNNING',
+            error_message = NULL,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+          AND status = 'QUEUED'
+          AND execution_generation = :executionGeneration
+        """
+    )
+    suspend fun claimExecution(
+        taskId: Long,
+        executionGeneration: Long,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_tasks
+        SET status = :status,
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+          AND status = 'RUNNING'
+          AND execution_generation = :executionGeneration
+        """
+    )
+    suspend fun finishRunningExecution(
+        taskId: Long,
+        executionGeneration: Long,
+        status: String,
+        errorMessage: String?,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_tasks
         SET status = 'CANCELLED',
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+          AND status IN ('QUEUED', 'RUNNING')
+          AND execution_generation = :executionGeneration
+        """
+    )
+    suspend fun cancelExecution(
+        taskId: Long,
+        executionGeneration: Long,
+        errorMessage: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_tasks
+        SET status = 'FAILED',
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+          AND status IN ('QUEUED', 'RUNNING')
+          AND execution_generation = :executionGeneration
+        """
+    )
+    suspend fun failActiveExecution(
+        taskId: Long,
+        executionGeneration: Long,
+        errorMessage: String,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_tasks
+        SET status = 'CANCELLED',
+            execution_generation = execution_generation + 1,
+            error_message = :errorMessage,
+            updated_at_millis = :updatedAtMillis
+        WHERE id = :taskId
+          AND status IN ('QUEUED', 'RUNNING')
+        """
+    )
+    suspend fun cancelTask(
+        taskId: Long,
+        errorMessage: String?,
+        updatedAtMillis: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE analysis_tasks
+        SET status = 'CANCELLED',
+            execution_generation = execution_generation + 1,
             error_message = :errorMessage,
             updated_at_millis = :updatedAtMillis
         WHERE status IN ('QUEUED', 'RUNNING')
@@ -171,10 +263,13 @@ interface AnalysisTaskDao {
             sampled_frame_count = :sampledFrameCount,
             total_sample_count = :totalSampleCount
         WHERE id = :taskId
+          AND status = 'RUNNING'
+          AND execution_generation = :executionGeneration
         """
     )
     suspend fun saveSamplingProgress(
         taskId: Long,
+        executionGeneration: Long,
         progress: Int,
         nextTimestampMillis: Long,
         updatedAtMillis: Long,
@@ -182,7 +277,7 @@ interface AnalysisTaskDao {
         rangeIndex: Int,
         sampledFrameCount: Long,
         totalSampleCount: Long,
-    )
+    ): Int
 }
 
 @Database(
@@ -197,7 +292,7 @@ interface AnalysisTaskDao {
         MediaFeatureReferenceEntity::class,
         MediaQualityResultEntity::class,
     ],
-    version = 6
+    version = 7
 )
 abstract class FrameYuDatabase : RoomDatabase() {
     abstract fun mediaAssetDao(): MediaAssetDao
@@ -420,6 +515,24 @@ abstract class FrameYuDatabase : RoomDatabase() {
                 )
             }
         }
+
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE analysis_tasks " +
+                        "ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    """
+                    UPDATE analysis_tasks
+                    SET status = 'FAILED',
+                        execution_generation = 1,
+                        error_message = '应用升级后需重试视频分析'
+                    WHERE status IN ('QUEUED', 'RUNNING')
+                    """.trimIndent()
+                )
+            }
+        }
     }
 }
 
@@ -427,6 +540,7 @@ abstract class FrameYuDatabase : RoomDatabase() {
 class RoomSamplingCheckpointStore(
     private val taskId: Long,
     private val dao: AnalysisTaskDao,
+    private val executionGeneration: Long = 0L,
     private val nowMillis: () -> Long,
 ) : com.frameyu.app.sampling.SamplingCheckpointStore {
     override suspend fun save(progress: VideoAnalysisProgress) {
@@ -435,6 +549,7 @@ class RoomSamplingCheckpointStore(
         }
         dao.saveSamplingProgress(
             taskId = taskId,
+            executionGeneration = executionGeneration,
             progress = percentage,
             nextTimestampMillis = progress.nextTimestampMillis,
             updatedAtMillis = nowMillis(),

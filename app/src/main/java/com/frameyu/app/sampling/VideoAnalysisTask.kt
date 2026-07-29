@@ -16,6 +16,7 @@ sealed interface VideoAnalysisTaskResult {
     data class Completed(val progress: VideoAnalysisProgress) : VideoAnalysisTaskResult
     data class Cancelled(val progress: VideoAnalysisProgress) : VideoAnalysisTaskResult
     data class Failed(val progress: VideoAnalysisProgress, val error: Throwable) : VideoAnalysisTaskResult
+    data object Skipped : VideoAnalysisTaskResult
 }
 
 fun interface SamplingCheckpointStore {
@@ -30,6 +31,7 @@ class VideoAnalysisTask(
         plan: SamplingPlan,
         checkpoint: SamplingCheckpoint? = null,
         onProgress: suspend (VideoAnalysisProgress) -> Unit = {},
+        shouldContinue: suspend () -> Boolean = { true },
         onTimestamp: suspend (Long) -> Unit,
     ): VideoAnalysisTaskResult {
         var rangeIndex = checkpoint?.rangeIndex ?: 0
@@ -51,6 +53,17 @@ class VideoAnalysisTask(
                     }
                 }
                 for (timestampIndex in startIndex until timestamps.size) {
+                    if (!shouldContinue()) {
+                        return VideoAnalysisTaskResult.Cancelled(
+                            VideoAnalysisProgress(
+                                planId,
+                                rangeIndex,
+                                nextTimestamp,
+                                sampledCount,
+                                totalSampleCount,
+                            ),
+                        )
+                    }
                     val timestamp = timestamps[timestampIndex]
                     currentCoroutineContext().ensureActive()
                     onTimestamp(timestamp)

@@ -58,7 +58,6 @@ class MainActivity : ComponentActivity() {
                 LibraryViewModel(
                     repository = repository,
                     analysisTaskDao = frameYuApplication.database.analysisTaskDao(),
-                    analysisCandidateDao = frameYuApplication.database.analysisCandidateDao(),
                     workScheduler = frameYuApplication.videoAnalysisWorkScheduler,
                 ) as T
         }

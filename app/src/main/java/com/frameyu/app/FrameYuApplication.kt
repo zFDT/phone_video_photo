@@ -23,6 +23,7 @@ import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.media.MediaStoreRepository
 import com.frameyu.app.data.media.MediaStoreScanner
 import com.frameyu.app.sampling.RoomVideoAnalysisWorkerRunner
+import com.frameyu.app.sampling.RoomVideoAnalysisLifecycleStore
 import com.frameyu.app.sampling.RoomVideoFrameModelStore
 import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
 import com.frameyu.app.sampling.VideoAnalysisWorker
@@ -55,6 +56,9 @@ class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var videoAnalysisWorkScheduler: VideoAnalysisWorkScheduler
         private set
 
+    lateinit var videoAnalysisLifecycleStore: RoomVideoAnalysisLifecycleStore
+        private set
+
     val batchAnalysisWorkScheduler: BatchAnalysisScheduler by lazy(
         LazyThreadSafetyMode.SYNCHRONIZED,
     ) {
@@ -64,7 +68,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
     lateinit var mediaStoreRepository: MediaStoreRepository
         private set
 
-    var videoAnalysisWorkerRunner: VideoAnalysisWorkerRunner = VideoAnalysisWorkerRunner { _, _ ->
+    var videoAnalysisWorkerRunner: VideoAnalysisWorkerRunner = VideoAnalysisWorkerRunner { _, _, _ ->
         error("尚未配置视频分析执行器")
     }
 
@@ -165,18 +169,24 @@ class FrameYuApplication : Application(), Configuration.Provider {
                 FrameYuDatabase.MIGRATION_3_4,
                 FrameYuDatabase.MIGRATION_4_5,
                 FrameYuDatabase.MIGRATION_5_6,
+                FrameYuDatabase.MIGRATION_6_7,
             )
             .build()
         val settingsStore = SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
+        videoAnalysisLifecycleStore = RoomVideoAnalysisLifecycleStore(database)
         videoAnalysisWorkerRunner = RoomVideoAnalysisWorkerRunner(
             context = this,
             database = database,
+            lifecycleStore = videoAnalysisLifecycleStore,
             frameModelAnalyzerProvider = { frameModelAnalyzer },
             frameModelStoreProvider = { videoFrameModelStore },
             concertModeEnabledProvider = { settingsStore.read().concertModeEnabled },
             thermalStatusProvider = AndroidThermalStatusProvider(this)::current,
         )
-        videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(this)
+        videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(
+            this,
+            videoAnalysisLifecycleStore,
+        )
         mediaStoreRepository = MediaStoreRepository(MediaStoreScanner(contentResolver, database.mediaAssetDao()))
         applicationScope.launch {
             try {

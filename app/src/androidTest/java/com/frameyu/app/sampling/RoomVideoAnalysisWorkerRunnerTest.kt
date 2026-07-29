@@ -192,7 +192,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `温控停止取消原样传播并持久化终态且不推进checkpoint`() = runBlocking {
+    fun `温控停止落普通失败并释放领域取消语义`() = runBlocking {
         seed(durationMillis = 1L)
         val source = RecordingFrameSource()
         val runner = runner(
@@ -202,11 +202,79 @@ class RoomVideoAnalysisWorkerRunnerTest {
             thermalStatusProvider = { ThermalStatus.CRITICAL },
         )
 
-        val actual = captureCancellation { runner.run(TASK_ID) { } }
+        val result = runner.run(TASK_ID, 0L) { }
 
-        assertEquals("设备温度过高，已暂停分析", actual.message)
-        assertCancelledWithoutProgress(source)
+        assertTrue(result is VideoAnalysisTaskResult.Failed)
+        assertEquals(
+            "设备温度过高，已暂停分析",
+            (result as VideoAnalysisTaskResult.Failed).error.message,
+        )
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("FAILED", task.status)
+        assertEquals(0L, task.sampledFrameCount)
+        assertTrue(source.closed)
         assertTrue(source.requestedTimestamps.isEmpty())
+    }
+
+    @Test
+    fun `旧 generation 节点 no-op 且不创建解码器`() = runBlocking {
+        seed(durationMillis = 1L, task = task(executionGeneration = 2L))
+        val source = RecordingFrameSource()
+
+        val result = runner(analyzer { frameResult() }, store, source)
+            .run(TASK_ID, 1L) { }
+
+        assertEquals(VideoAnalysisTaskResult.Skipped, result)
+        assertTrue(source.requestedTimestamps.isEmpty())
+        assertTrue(!source.closed)
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("QUEUED", task.status)
+        assertEquals(2L, task.executionGeneration)
+    }
+
+    @Test
+    fun `运行中协作取消在下一帧停止并保留 checkpoint`() = runBlocking {
+        seed(durationMillis = 3_000L, task = task(executionGeneration = 5L))
+        val source = RecordingFrameSource()
+        val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
+
+        val result = runner(analyzer { frameResult() }, store, source)
+            .run(TASK_ID, 5L) { progress ->
+                if (progress.sampledFrameCount == 1L) {
+                    lifecycleStore.cancel(TASK_ID)
+                }
+            }
+
+        assertTrue(result is VideoAnalysisTaskResult.Cancelled)
+        assertEquals(listOf(0L), source.requestedTimestamps)
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("CANCELLED", task.status)
+        assertEquals(6L, task.executionGeneration)
+        assertEquals(1L, task.sampledFrameCount)
+        assertEquals(1_000L, task.currentTimestampMillis)
+    }
+
+    @Test
+    fun `旧 runner 不能覆盖新 generation 状态`() = runBlocking {
+        seed(durationMillis = 3_000L, task = task(executionGeneration = 5L))
+        val source = RecordingFrameSource()
+        val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
+
+        val result = runner(analyzer { frameResult() }, store, source)
+            .run(TASK_ID, 5L) { progress ->
+                if (progress.sampledFrameCount == 1L) {
+                    lifecycleStore.cancel(TASK_ID)
+                    assertEquals(7L, lifecycleStore.prepareExecution(TASK_ID).executionGeneration)
+                }
+            }
+
+        assertTrue(result is VideoAnalysisTaskResult.Cancelled)
+        assertEquals(listOf(0L), source.requestedTimestamps)
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("QUEUED", task.status)
+        assertEquals(7L, task.executionGeneration)
+        assertEquals(0L, task.sampledFrameCount)
+        assertEquals(0L, task.currentTimestampMillis)
     }
 
     @Test
@@ -345,6 +413,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         currentTimestampMillis: Long = 0L,
         sampledFrameCount: Long = 0L,
         totalSampleCount: Long = 0L,
+        executionGeneration: Long = 0L,
     ) = AnalysisTaskEntity(
         id = TASK_ID,
         mediaAssetId = MEDIA_ID,
@@ -357,6 +426,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         rangeIndex = 0,
         sampledFrameCount = sampledFrameCount,
         totalSampleCount = totalSampleCount,
+        executionGeneration = executionGeneration,
     )
 
     private class RecordingFrameSource(

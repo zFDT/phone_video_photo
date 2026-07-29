@@ -16,7 +16,6 @@ import com.frameyu.app.system.ThermalState
 import com.frameyu.app.system.ThermalStatus
 import com.frameyu.app.vision.FrameModelAnalyzer
 import java.io.Closeable
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /** 视频帧解码薄边界，便于在不读取真实媒体文件时验证生产 runner。 */
@@ -48,6 +47,7 @@ private class MediaMetadataRetrieverFrameSource : VideoFrameSource {
 class RoomVideoAnalysisWorkerRunner(
     private val context: Context,
     private val database: FrameYuDatabase,
+    private val lifecycleStore: VideoAnalysisRunnerStore = RoomVideoAnalysisLifecycleStore(database),
     private val frameModelAnalyzerProvider: () -> FrameModelAnalyzer,
     private val frameModelStoreProvider: () -> RoomVideoFrameModelStore,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
@@ -59,40 +59,51 @@ class RoomVideoAnalysisWorkerRunner(
 ) : VideoAnalysisWorkerRunner {
     override suspend fun run(
         taskId: Long,
+        executionGeneration: Long,
         onProgress: suspend (VideoAnalysisProgress) -> Unit,
     ): VideoAnalysisTaskResult {
+        val execution = VideoAnalysisExecutionKey(taskId, executionGeneration)
         var frameSource: VideoFrameSource? = null
         return runTaskLifecycle(
             taskId = taskId,
             markCancelled = { cancelledTaskId, cancelled ->
-                database.analysisTaskDao().updateTaskStatus(
-                    cancelledTaskId,
-                    AnalysisTask.Status.CANCELLED.name,
+                lifecycleStore.markCancelled(
+                    VideoAnalysisExecutionKey(cancelledTaskId, executionGeneration),
                     cancelled.message ?: "视频分析已取消",
-                    nowMillis(),
                 )
             },
             markFailed = { failedTaskId, error ->
-                database.analysisTaskDao().updateTaskStatus(
-                    failedTaskId,
-                    AnalysisTask.Status.FAILED.name,
+                lifecycleStore.markFailed(
+                    VideoAnalysisExecutionKey(failedTaskId, executionGeneration),
                     error.message ?: "视频分析失败",
-                    nowMillis(),
                 )
             },
             closeResource = { frameSource?.close() },
         ) {
-            runAnalysis(taskId, onProgress) { createdSource ->
+            if (!lifecycleStore.claim(execution)) {
+                return@runTaskLifecycle VideoAnalysisTaskResult.Skipped
+            }
+            runAnalysis(execution, onProgress) { createdSource ->
                 frameSource = createdSource
             }
         }
     }
 
-    private suspend fun runAnalysis(
+    override suspend fun markFailed(
         taskId: Long,
+        executionGeneration: Long,
+        message: String,
+    ): Boolean = lifecycleStore.markFailed(
+        VideoAnalysisExecutionKey(taskId, executionGeneration),
+        message,
+    )
+
+    private suspend fun runAnalysis(
+        execution: VideoAnalysisExecutionKey,
         onProgress: suspend (VideoAnalysisProgress) -> Unit,
         registerFrameSource: (VideoFrameSource) -> Unit,
     ): VideoAnalysisTaskResult {
+        val taskId = execution.taskId
         val task = database.analysisTaskDao().getTaskProgress(taskId)
             ?: error("分析任务不存在：$taskId")
         val media = database.mediaAssetDao().getById(task.mediaAssetId)
@@ -117,8 +128,6 @@ class RoomVideoAnalysisWorkerRunner(
                 null
             }
         }
-        database.analysisTaskDao().updateTaskStatus(taskId, AnalysisTask.Status.RUNNING.name, null, nowMillis())
-
         var previousSample: FrameSample? = null
         var frameIndex = checkpoint?.sampledFrameCount?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
         val analyzer = RuleBasedFrameAnalyzer()
@@ -127,6 +136,7 @@ class RoomVideoAnalysisWorkerRunner(
                 taskId = taskId,
                 dao = database.analysisTaskDao(),
                 nowMillis = nowMillis,
+                executionGeneration = execution.executionGeneration,
             ),
         )
 
@@ -148,6 +158,12 @@ class RoomVideoAnalysisWorkerRunner(
                 plan = plan,
                 checkpoint = checkpoint,
                 onProgress = onProgress,
+                shouldContinue = {
+                    lifecycleStore.controlState(taskId)?.let { control ->
+                        control.status == AnalysisTask.Status.RUNNING.name &&
+                            control.executionGeneration == execution.executionGeneration
+                    } == true
+                },
             ) { timestampMillis ->
                 awaitThermalWindow()
                 val bitmap = activeFrameSource.getFrameAt(timestampMillis)
@@ -189,21 +205,35 @@ class RoomVideoAnalysisWorkerRunner(
                 is VideoAnalysisTaskResult.Completed -> AnalysisTask.Status.COMPLETED
                 is VideoAnalysisTaskResult.Cancelled -> AnalysisTask.Status.CANCELLED
                 is VideoAnalysisTaskResult.Failed -> AnalysisTask.Status.FAILED
+                VideoAnalysisTaskResult.Skipped -> return@run result
             }
             val errorMessage = (result as? VideoAnalysisTaskResult.Failed)?.error?.message
-            database.analysisTaskDao().updateTaskStatus(taskId, status.name, errorMessage, nowMillis())
+            when (status) {
+                AnalysisTask.Status.COMPLETED -> lifecycleStore.markCompleted(execution)
+                AnalysisTask.Status.CANCELLED -> lifecycleStore.markCancelled(
+                    execution,
+                    "视频分析已取消",
+                )
+                AnalysisTask.Status.FAILED -> lifecycleStore.markFailed(
+                    execution,
+                    errorMessage ?: "视频分析失败",
+                )
+                else -> Unit
+            }
             result
         }
     }
 
-    /** 温控暂停期间等待设备恢复；临界温度保留协程取消语义并向 Worker 传播。 */
+    /** 温控暂停期间等待设备恢复；临界温度转为可持久化普通失败。 */
     private suspend fun awaitThermalWindow() {
         val monitor = ThermalMonitor()
         while (true) {
             when (monitor.stateFor(thermalStatusProvider())) {
                 ThermalState.RUNNING -> return
                 ThermalState.PAUSED -> delay(THERMAL_POLL_INTERVAL_MILLIS)
-                ThermalState.STOPPED -> throw CancellationException("设备温度过高，已暂停分析")
+                ThermalState.STOPPED -> throw ThermalProtectionException(
+                    "设备温度过高，已暂停分析",
+                )
             }
         }
     }
@@ -225,3 +255,5 @@ class RoomVideoAnalysisWorkerRunner(
         const val THERMAL_POLL_INTERVAL_MILLIS = 5_000L
     }
 }
+
+private class ThermalProtectionException(message: String) : Exception(message)

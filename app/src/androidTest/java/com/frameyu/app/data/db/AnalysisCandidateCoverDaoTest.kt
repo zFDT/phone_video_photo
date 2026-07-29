@@ -2,10 +2,12 @@ package com.frameyu.app.data.db
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -112,6 +114,7 @@ class AnalysisCandidateCoverDaoTest {
                 FrameYuDatabase.MIGRATION_3_4,
                 FrameYuDatabase.MIGRATION_4_5,
                 FrameYuDatabase.MIGRATION_5_6,
+                FrameYuDatabase.MIGRATION_6_7,
             )
             .build()
         try {
@@ -140,6 +143,99 @@ class AnalysisCandidateCoverDaoTest {
         } finally {
             roomDatabase.close()
             context.deleteDatabase(databaseName)
+        }
+    }
+
+    @Test
+    fun migration6To7InvalidatesLegacyActiveVideoWorkAndPreservesTerminalTasks() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val databaseName = "video-analysis-generation-migration.db"
+        context.deleteDatabase(databaseName)
+        createVersion2Database(context, databaseName)
+        val seedVersion6Tasks = object : Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                FrameYuDatabase.MIGRATION_5_6.migrate(db)
+                db.execSQL(
+                    """
+                    INSERT INTO media_assets (
+                        id, uri, mime_type, taken_at_millis, duration_millis, width, height,
+                        rotation_degrees, size_bytes, is_hdr, relative_path, last_modified_millis
+                    ) VALUES
+                        (1, 'content://media/1', 'video/mp4', 0, 1000, 2, 2, 0, 1, 0, NULL, 0),
+                        (2, 'content://media/2', 'video/mp4', 0, 1000, 2, 2, 0, 1, 0, NULL, 0),
+                        (3, 'content://media/3', 'video/mp4', 0, 1000, 2, 2, 0, 1, 0, NULL, 0)
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO analysis_tasks (
+                        id, media_asset_id, status, progress, current_timestamp_millis,
+                        error_message, updated_at_millis, plan_id, range_index,
+                        sampled_frame_count, total_sample_count
+                    ) VALUES
+                        (1, 1, 'QUEUED', 0, 0, NULL, 10, NULL, 0, 0, 0),
+                        (2, 2, 'RUNNING', 50, 500, NULL, 20, 'plan', 0, 1, 2),
+                        (3, 3, 'COMPLETED', 100, 1000, NULL, 30, 'plan', 1, 2, 2)
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        val roomDatabase = Room.databaseBuilder(context, FrameYuDatabase::class.java, databaseName)
+            .addMigrations(
+                FrameYuDatabase.MIGRATION_2_3,
+                FrameYuDatabase.MIGRATION_3_4,
+                FrameYuDatabase.MIGRATION_4_5,
+                seedVersion6Tasks,
+                FrameYuDatabase.MIGRATION_6_7,
+            )
+            .build()
+        try {
+            val queued = roomDatabase.analysisTaskDao().getTaskProgress(1L)!!
+            val running = roomDatabase.analysisTaskDao().getTaskProgress(2L)!!
+            val completed = roomDatabase.analysisTaskDao().getTaskProgress(3L)!!
+
+            assertEquals("FAILED", queued.status)
+            assertEquals(1L, queued.executionGeneration)
+            assertTrue(queued.errorMessage!!.contains("升级"))
+            assertEquals("FAILED", running.status)
+            assertEquals(1L, running.executionGeneration)
+            assertEquals(500L, running.currentTimestampMillis)
+            assertEquals("COMPLETED", completed.status)
+            assertEquals(0L, completed.executionGeneration)
+
+            roomDatabase.analysisTaskDao().saveTaskProgress(
+                AnalysisTaskEntity(
+                    id = 4L,
+                    mediaAssetId = 3L,
+                    status = "QUEUED",
+                    progress = 0,
+                    currentTimestampMillis = 0L,
+                    errorMessage = null,
+                    updatedAtMillis = 40L,
+                ),
+            )
+            assertEquals(
+                0L,
+                roomDatabase.analysisTaskDao().getTaskProgress(4L)?.executionGeneration,
+            )
+        } finally {
+            roomDatabase.close()
+            context.deleteDatabase(databaseName)
+        }
+    }
+
+    private fun createVersion2Database(context: Context, databaseName: String) {
+        context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
+            database.execSQL("CREATE TABLE media_assets (id INTEGER NOT NULL, uri TEXT NOT NULL, mime_type TEXT NOT NULL, taken_at_millis INTEGER NOT NULL, duration_millis INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, rotation_degrees INTEGER NOT NULL, size_bytes INTEGER NOT NULL, is_hdr INTEGER NOT NULL, relative_path TEXT, last_modified_millis INTEGER NOT NULL, PRIMARY KEY(id))")
+            database.execSQL("CREATE UNIQUE INDEX index_media_assets_uri ON media_assets(uri)")
+            database.execSQL("CREATE TABLE analysis_candidates (id INTEGER NOT NULL, media_asset_id INTEGER NOT NULL, timestamp_millis INTEGER NOT NULL, score INTEGER NOT NULL, sharpness_score INTEGER NOT NULL, subject_score INTEGER NOT NULL, expression_score INTEGER NOT NULL, composition_score INTEGER NOT NULL, scene_score INTEGER NOT NULL, thumbnail_path TEXT, is_selected INTEGER NOT NULL, PRIMARY KEY(id), FOREIGN KEY(media_asset_id) REFERENCES media_assets(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+            database.execSQL("CREATE INDEX index_analysis_candidates_media_asset_id ON analysis_candidates(media_asset_id)")
+            database.execSQL("CREATE TABLE analysis_tasks (id INTEGER NOT NULL, media_asset_id INTEGER NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, current_timestamp_millis INTEGER NOT NULL, error_message TEXT, updated_at_millis INTEGER NOT NULL, plan_id TEXT, range_index INTEGER NOT NULL, sampled_frame_count INTEGER NOT NULL, total_sample_count INTEGER NOT NULL, PRIMARY KEY(id), FOREIGN KEY(media_asset_id) REFERENCES media_assets(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+            database.execSQL("CREATE INDEX index_analysis_tasks_media_asset_id ON analysis_tasks(media_asset_id)")
+            database.execSQL("CREATE TABLE room_master_table (id INTEGER PRIMARY KEY, identity_hash TEXT)")
+            database.execSQL("INSERT INTO room_master_table (id, identity_hash) VALUES(42, 'b1399d69e37760a84059306c84adfd65')")
+            database.version = 2
         }
     }
 

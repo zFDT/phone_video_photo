@@ -2,10 +2,9 @@ package com.frameyu.app.ui.library
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.frameyu.app.data.db.AnalysisCandidateDao
 import com.frameyu.app.data.db.AnalysisTaskDao
-import com.frameyu.app.data.db.AnalysisTaskEntity
 import com.frameyu.app.data.db.MediaAssetEntity
+import com.frameyu.app.data.db.AnalysisTaskEntity
 import com.frameyu.app.data.media.MediaScanState
 import com.frameyu.app.data.media.MediaStoreRepository
 import com.frameyu.app.sampling.VideoAnalysisWorkScheduler
@@ -32,7 +31,6 @@ data class LibraryUiState(
 class LibraryViewModel(
     private val repository: MediaStoreRepository,
     private val analysisTaskDao: AnalysisTaskDao,
-    private val analysisCandidateDao: AnalysisCandidateDao,
     private val workScheduler: VideoAnalysisWorkScheduler,
 ) : ViewModel() {
     private val _mediaCount = MutableStateFlow(0)
@@ -78,32 +76,14 @@ class LibraryViewModel(
         }
     }
 
-    /** 取消当前串行分析链，并将排队/运行中的任务标记为可重试。 */
+    /** 协作取消当前串行分析链中的全部活动任务。 */
     fun cancelBatchVideoAnalysis() {
         viewModelScope.launch {
             workScheduler.cancelAll()
-            analysisTaskDao.cancelActiveTasks(
-                errorMessage = "用户取消分析",
-                updatedAtMillis = System.currentTimeMillis(),
-            )
         }
     }
 
     private suspend fun queueVideoAnalysis(media: MediaAssetEntity) {
-        val current = analysisTaskDao.getTaskProgress(media.id)
-        if (current?.status == "QUEUED" || current?.status == "RUNNING") return
-        analysisCandidateDao.deleteByMediaAssetId(media.id)
-        analysisTaskDao.saveTaskProgress(
-            AnalysisTaskEntity(
-                id = media.id,
-                mediaAssetId = media.id,
-                status = "QUEUED",
-                progress = 0,
-                currentTimestampMillis = 0L,
-                errorMessage = null,
-                updatedAtMillis = System.currentTimeMillis(),
-            ),
-        )
         workScheduler.enqueue(media.id)
     }
 

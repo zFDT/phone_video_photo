@@ -800,6 +800,60 @@ git add app/src/main/java/com/frameyu/app/sampling app/src/test/java/com/frameyu
 git commit -m "feat(P1): 接入视频帧模型分析"
 ```
 
+### 任务 8.5：视频 WorkManager 串行队列 P0 加固
+
+**文件：**
+- 修改：`app/src/main/java/com/frameyu/app/data/db/FrameYuDatabase.kt`
+- 创建：`app/src/main/java/com/frameyu/app/sampling/VideoAnalysisLifecycleStore.kt`
+- 修改：`app/src/main/java/com/frameyu/app/sampling/VideoAnalysisWorkScheduler.kt`
+- 修改：`app/src/main/java/com/frameyu/app/sampling/RoomVideoAnalysisWorkerRunner.kt`
+- 修改：`app/src/main/java/com/frameyu/app/sampling/VideoAnalysisWorker.kt`
+- 修改：`app/src/main/java/com/frameyu/app/ui/library/LibraryViewModel.kt`
+- 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
+- 修改：`app/src/main/java/com/frameyu/app/MainActivity.kt`
+- 测试：`app/src/test/java/com/frameyu/app/sampling/VideoAnalysisWorkSchedulerTest.kt`
+- 测试：`app/src/test/java/com/frameyu/app/sampling/VideoAnalysisExecutionTest.kt`
+- 测试：`app/src/androidTest/java/com/frameyu/app/sampling/RoomVideoAnalysisLifecycleStoreTest.kt`
+- 测试：`app/src/androidTest/java/com/frameyu/app/sampling/RoomVideoAnalysisWorkerRunnerTest.kt`
+- 测试：`app/src/androidTest/java/com/frameyu/app/data/db/AnalysisCandidateCoverDaoTest.kt`
+
+- [x] **步骤 1：以迁移测试驱动视频执行代际**
+
+在 `analysis_tasks` 增加默认值为 `0` 的 `execution_generation`，数据库升级到 v7 并注册 `MIGRATION_6_7`。迁移把旧 `QUEUED`/`RUNNING` 任务提升代际并转为带明确错误信息的 `FAILED`，使缺少 generation 的历史 WorkRequest 无法认领，同时允许用户显式重试。
+
+- [x] **步骤 2：以 lifecycle store 测试驱动原子状态转换**
+
+首次准备创建 generation 0；终态重试在单个事务中提升 generation、清空错误与 checkpoint 并置为 `QUEUED`；活动任务重复请求保持 generation。入队失败仅按 taskId + generation 将活动代标记为 `FAILED`，取消单个或全部活动任务只更新 Room 为 `CANCELLED` 并提升 generation。
+
+- [x] **步骤 3：以 scheduler 测试驱动执行键去重**
+
+WorkData 与 tag 同时携带 taskId + generation。scheduler 按执行键查询未完成 Work，重复 enqueue 复用 requestId；本地并发串行化，并在入队异常后重新查询竞态结果。单任务取消和批量取消不得调用 `cancelWorkById`、`cancelUniqueWork` 或其他 WorkManager cancel API。
+
+- [x] **步骤 4：以 runner 测试驱动 generation CAS 与协作取消**
+
+runner 必须先以 taskId + generation CAS 执行 `QUEUED → RUNNING`，成功 claim 后才清理上一代候选帧并创建解码器。旧代际、终态或已被 claim 的节点返回 no-op；逐帧边界检查状态和 generation，协作取消在下一帧前停止并保留最后 checkpoint。checkpoint、`COMPLETED`、`FAILED`、`CANCELLED` 更新均受 generation 和状态约束，旧 runner 不得覆盖新代状态。
+
+- [x] **步骤 5：以 Worker 边界测试驱动共享链释放**
+
+runner 已持久化的 `Completed`、`Cancelled`、`Failed` 和 `Skipped` 一律映射为 `Result.success`。真正的 `CancellationException` 与 `Error` 原样传播；普通边界异常尽最大努力按当前 generation 落 `FAILED` 后返回 success。临界温控使用普通可持久化失败，不以领域 `CancellationException` 取消 Work。
+
+- [x] **步骤 6：收敛调用方并完成回归验证**
+
+`LibraryViewModel` 只调用 scheduler/lifecycle API，不再自行执行 get/save/delete/enqueue；`FrameYuApplication` 和 `MainActivity` 注入同一 lifecycle store。验证单任务/批量取消不触发 WorkManager cancel、重复 enqueue、入队异常、旧 generation no-op、旧 runner 隔离、运行中协作取消、v6→v7 migration，以及既有 6 小时采样和模型流程。
+
+运行：
+
+```powershell
+./gradlew.bat :app:testDebugUnitTest --tests '*VideoAnalysis*' --tests '*CancellationPersistenceTest'
+./gradlew.bat :app:testDebugUnitTest
+./gradlew.bat :app:assembleDebug :app:compileDebugAndroidTestKotlin
+git diff --check
+```
+
+预期：所有命令成功；migration instrumentation 测试完成编译，真机执行结果在最终报告中单独说明。
+
+验证记录：`testDebugUnitTest` 共 340 个测试通过；`assembleDebug`、`compileDebugAndroidTestKotlin` 和 `git diff --check` 通过。当前无连接 Android 设备，v6→v7 migration、generation CAS 和运行中协作取消 instrumentation 用例已编译，待真机执行。
+
 ### 任务 9：实现推荐引擎、批次页面和统一人工确认
 
 **文件：**

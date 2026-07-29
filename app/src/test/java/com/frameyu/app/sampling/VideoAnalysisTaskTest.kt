@@ -119,6 +119,27 @@ class VideoAnalysisTaskTest {
     }
 
     @Test
+    fun `协作控制在下一帧边界停止并保留最后 checkpoint`() = runBlocking {
+        val plan = SamplingPlan.create(3_000L)
+        val saved = mutableListOf<VideoAnalysisProgress>()
+        var running = true
+        val sampled = mutableListOf<Long>()
+
+        val result = VideoAnalysisTask(SamplingCheckpointStore { saved += it }).run(
+            plan = plan,
+            shouldContinue = { running },
+        ) { timestamp ->
+            sampled += timestamp
+            running = false
+        }
+
+        assertTrue(result is VideoAnalysisTaskResult.Cancelled)
+        assertEquals(listOf(0L), sampled)
+        assertEquals(1L, saved.single().sampledFrameCount)
+        assertEquals(saved.single(), (result as VideoAnalysisTaskResult.Cancelled).progress)
+    }
+
+    @Test
     fun `协程取消和Error不会被转换为任务结果`() {
         val cancellation = CancellationException("cancel")
         val actualCancellation = assertThrows<CancellationException> {
