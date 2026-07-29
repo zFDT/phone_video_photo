@@ -39,6 +39,10 @@ interface VideoAnalysisLifecycleStore {
 }
 
 interface VideoAnalysisRunnerStore {
+    /**
+     * RESUME 仅表示 WorkManager 对同一节点、同一 generation 的重投。
+     * 唯一串行链必须保证同一 generation 不会并发运行多个 runner。
+     */
     suspend fun claim(execution: VideoAnalysisExecutionKey): VideoAnalysisClaimResult
 
     suspend fun controlState(taskId: Long): VideoAnalysisControlState?

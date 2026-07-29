@@ -81,10 +81,11 @@ class RoomVideoAnalysisWorkerRunner(
             },
             closeResource = { frameSource?.close() },
         ) {
-            if (lifecycleStore.claim(execution) == VideoAnalysisClaimResult.STALE) {
+            val claimResult = lifecycleStore.claim(execution)
+            if (claimResult == VideoAnalysisClaimResult.STALE) {
                 return@runTaskLifecycle VideoAnalysisTaskResult.Skipped
             }
-            runAnalysis(execution, onProgress) { createdSource ->
+            runAnalysis(execution, claimResult, onProgress) { createdSource ->
                 frameSource = createdSource
             }
         }
@@ -101,6 +102,7 @@ class RoomVideoAnalysisWorkerRunner(
 
     private suspend fun runAnalysis(
         execution: VideoAnalysisExecutionKey,
+        claimResult: VideoAnalysisClaimResult,
         onProgress: suspend (VideoAnalysisProgress) -> Unit,
         registerFrameSource: (VideoFrameSource) -> Unit,
     ): VideoAnalysisTaskResult {
@@ -130,6 +132,11 @@ class RoomVideoAnalysisWorkerRunner(
             }
         }
         var previousSample: FrameSample? = null
+        var prewarmTimestampMillis = if (claimResult == VideoAnalysisClaimResult.RESUME) {
+            checkpoint?.let(plan::previousCanonicalTimestamp)
+        } else {
+            null
+        }
         var frameIndex = checkpoint?.sampledFrameCount?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
         val analyzer = RuleBasedFrameAnalyzer()
         val runner = VideoAnalysisTask(
@@ -166,6 +173,38 @@ class RoomVideoAnalysisWorkerRunner(
                     } == true
                 },
             ) { timestampMillis ->
+                prewarmTimestampMillis?.let { prewarmTimestamp ->
+                    awaitThermalWindow(execution)
+                    val prewarmBitmap = activeFrameSource.getFrameAt(prewarmTimestamp)
+                        ?: error("无法读取时间 ${prewarmTimestamp}ms 的视频帧")
+                    try {
+                        val analysisBitmap = prewarmBitmap.scaleForAnalysis()
+                        try {
+                            previousSample = FrameSample(
+                                frameIndex = (frameIndex - 1).coerceAtLeast(0),
+                                timestampMillis = prewarmTimestamp,
+                                width = analysisBitmap.width,
+                                height = analysisBitmap.height,
+                                pixels = IntArray(analysisBitmap.width * analysisBitmap.height).also {
+                                    analysisBitmap.getPixels(
+                                        it,
+                                        0,
+                                        analysisBitmap.width,
+                                        0,
+                                        0,
+                                        analysisBitmap.width,
+                                        analysisBitmap.height,
+                                    )
+                                },
+                            )
+                        } finally {
+                            if (analysisBitmap !== prewarmBitmap) analysisBitmap.recycle()
+                        }
+                    } finally {
+                        prewarmBitmap.recycle()
+                    }
+                    prewarmTimestampMillis = null
+                }
                 awaitThermalWindow(execution)
                 val bitmap = activeFrameSource.getFrameAt(timestampMillis)
                     ?: error("无法读取时间 ${timestampMillis}ms 的视频帧")

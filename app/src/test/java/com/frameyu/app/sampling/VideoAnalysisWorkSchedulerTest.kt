@@ -7,6 +7,7 @@ import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -58,26 +59,28 @@ class VideoAnalysisWorkSchedulerTest {
 
     @Test
     fun `双协程同时 enqueue 同一活动代只创建一个节点`() = runBlocking {
-        val enteredEnqueue = CompletableDeferred<Unit>()
-        val releaseEnqueue = CompletableDeferred<Unit>()
-        val workManager = FakeSchedulerWorkManager().apply {
-            beforeEnqueue = {
-                enteredEnqueue.complete(Unit)
-                releaseEnqueue.await()
+        withTimeout(3_000L) {
+            val enteredEnqueue = CompletableDeferred<Unit>()
+            val releaseEnqueue = CompletableDeferred<Unit>()
+            val workManager = FakeSchedulerWorkManager().apply {
+                beforeEnqueue = {
+                    enteredEnqueue.complete(Unit)
+                    releaseEnqueue.await()
+                }
             }
+            val scheduler = VideoAnalysisWorkScheduler(
+                workManager,
+                RecordingVideoLifecycleStore(generation = 2L),
+            )
+
+            val first = async { scheduler.enqueue(7L) }
+            enteredEnqueue.await()
+            val second = async { scheduler.enqueue(7L) }
+            releaseEnqueue.complete(Unit)
+
+            assertEquals(first.await(), second.await())
+            assertEquals(1, workManager.enqueuedRequests.size)
         }
-        val scheduler = VideoAnalysisWorkScheduler(
-            workManager,
-            RecordingVideoLifecycleStore(generation = 2L),
-        )
-
-        val first = async { scheduler.enqueue(7L) }
-        enteredEnqueue.await()
-        val second = async { scheduler.enqueue(7L) }
-        releaseEnqueue.complete(Unit)
-
-        assertEquals(first.await(), second.await())
-        assertEquals(1, workManager.enqueuedRequests.size)
     }
 
     @Test

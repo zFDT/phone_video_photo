@@ -24,6 +24,26 @@ class SamplingPlan private constructor(
             .toList()
     }
 
+    internal fun previousCanonicalTimestamp(checkpoint: SamplingCheckpoint): Long? {
+        require(checkpoint.planId == planId) { "断点不属于当前采样计划" }
+        require(checkpoint.rangeIndex in ranges.indices) { "断点区间索引超出范围" }
+        val range = ranges[checkpoint.rangeIndex]
+        val timestamps = sampleTimestamps(checkpoint.rangeIndex)
+        val nextIndex = if (checkpoint.nextTimestampMillis == range.endMillis) {
+            timestamps.size
+        } else {
+            require(range.contains(checkpoint.nextTimestampMillis)) { "断点时间不属于当前采样区间" }
+            timestamps.indexOf(checkpoint.nextTimestampMillis).also { index ->
+                require(index >= 0) { "断点时间不是当前采样算法生成的时间戳" }
+            }
+        }
+        timestamps.getOrNull(nextIndex - 1)?.let { return it }
+        for (rangeIndex in checkpoint.rangeIndex - 1 downTo 0) {
+            sampleTimestamps(rangeIndex).lastOrNull()?.let { return it }
+        }
+        return null
+    }
+
     fun remainingRanges(checkpoint: SamplingCheckpoint): List<SampleRange> {
         require(checkpoint.planId == planId) { "断点不属于当前采样计划" }
         require(checkpoint.rangeIndex < ranges.size) { "断点区间索引超出范围" }

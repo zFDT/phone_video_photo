@@ -317,6 +317,30 @@ class SamplingPlanTest {
     }
 
     @Test
+    fun `恢复断点返回紧邻 canonical 前序时间戳且首帧没有前序`() {
+        val plan = SamplingPlan.create(
+            videoDurationMillis = 400L,
+            requestedRanges = listOf(
+                SampleRange(0L, 200L, 24.0, SamplingTier.HIGH_VALUE),
+                SampleRange(200L, 400L, 15.0, SamplingTier.HIGH_VALUE),
+            ),
+        )
+
+        assertEquals(
+            166L,
+            plan.previousCanonicalTimestamp(
+                SamplingCheckpoint(plan.planId, 1, 200L, 5L),
+            ),
+        )
+        assertEquals(
+            null,
+            plan.previousCanonicalTimestamp(
+                SamplingCheckpoint(plan.planId, 0, 0L, 0L),
+            ),
+        )
+    }
+
+    @Test
     fun `最后一个区间完成后没有剩余采样`() {
         val plan = SamplingPlan.create(videoDurationMillis = 10_000L)
 

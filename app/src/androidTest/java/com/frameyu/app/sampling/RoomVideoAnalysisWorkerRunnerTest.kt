@@ -145,7 +145,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         val result = runner(analyzer, store, source).run(TASK_ID, 5L) { }
 
         assertTrue(result is VideoAnalysisTaskResult.Completed)
-        assertEquals(listOf(1_000L, 2_000L), source.requestedTimestamps)
+        assertEquals(listOf(0L, 1_000L, 2_000L), source.requestedTimestamps)
         assertTrue(
             database.analysisCandidateDao().getByMediaAssetId(MEDIA_ID)
                 .any { it.id == HISTORICAL_CANDIDATE_ID },
@@ -158,6 +158,71 @@ class RoomVideoAnalysisWorkerRunnerTest {
         ).single()
         assertEquals("concert", aggregate.label)
         assertEquals(0.94f, aggregate.confidence, 0.0001f)
+    }
+
+    @Test
+    fun `RESUME 预热使首帧评分与不中断一致且不重复持久化或推进 checkpoint`() = runBlocking {
+        val plan = SamplingPlan.create(3_000L)
+        val uninterruptedHighValue = mutableMapOf<Long, Boolean>()
+        seed(durationMillis = 3_000L)
+        val uninterruptedSource = RecordingFrameSource(frameFactory = ::checkerboardBitmap)
+        val uninterruptedResult = runner(
+            analyzerProvider = {
+                recordingAnalyzer(uninterruptedHighValue)
+            },
+            frameStore = store,
+            source = uninterruptedSource,
+        ).run(TASK_ID) { }
+        assertTrue(uninterruptedResult is VideoAnalysisTaskResult.Completed)
+        val uninterruptedCandidate = database.analysisCandidateDao()
+            .getByMediaAssetId(MEDIA_ID)
+            .single { it.timestampMillis == 1_000L }
+
+        database.clearAllTables()
+        seed(
+            durationMillis = 3_000L,
+            task = task(
+                status = "RUNNING",
+                planId = plan.planId,
+                currentTimestampMillis = 1_000L,
+                sampledFrameCount = 1L,
+                totalSampleCount = 3L,
+                executionGeneration = 5L,
+            ),
+        )
+        database.analysisCandidateDao().upsertAll(listOf(candidate()))
+        val resumedHighValue = mutableMapOf<Long, Boolean>()
+        val resumedModelTimestamps = mutableListOf<Long>()
+        val resumedProgress = mutableListOf<VideoAnalysisProgress>()
+        val resumedSource = RecordingFrameSource(frameFactory = ::checkerboardBitmap)
+
+        val resumedResult = runner(
+            analyzerProvider = {
+                recordingAnalyzer(resumedHighValue) { timestampMillis ->
+                    resumedModelTimestamps += timestampMillis
+                }
+            },
+            frameStore = store,
+            source = resumedSource,
+        ).run(TASK_ID, 5L) { progress ->
+            resumedProgress += progress
+        }
+
+        assertTrue(resumedResult is VideoAnalysisTaskResult.Completed)
+        val resumedCandidates = database.analysisCandidateDao().getByMediaAssetId(MEDIA_ID)
+        val resumedCandidate = resumedCandidates.single { it.timestampMillis == 1_000L }
+        assertEquals(uninterruptedCandidate.score, resumedCandidate.score)
+        assertEquals(uninterruptedCandidate.sceneScore, resumedCandidate.sceneScore)
+        assertEquals(false, uninterruptedHighValue[1_000L])
+        assertEquals(uninterruptedHighValue[1_000L], resumedHighValue[1_000L])
+        assertEquals(listOf(0L, 1_000L, 2_000L), resumedSource.requestedTimestamps)
+        assertEquals(listOf(1_000L, 2_000L), resumedModelTimestamps)
+        assertEquals(
+            listOf(HISTORICAL_CANDIDATE_ID),
+            resumedCandidates.filter { it.timestampMillis == 0L }.map { it.id },
+        )
+        assertEquals(2L, resumedProgress.first().sampledFrameCount)
+        assertEquals(2_000L, resumedProgress.first().nextTimestampMillis)
     }
 
     @Test
@@ -228,8 +293,19 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `温控持续 PAUSED 时协作取消及时退出且不解码不推进 checkpoint`() = runBlocking {
-        seed(durationMillis = 1_000L, task = task(executionGeneration = 5L))
+    fun `RESUME 温控持续 PAUSED 时协作取消及时退出且不解码不推进 checkpoint`() = runBlocking {
+        val plan = SamplingPlan.create(3_000L)
+        seed(
+            durationMillis = 3_000L,
+            task = task(
+                status = "RUNNING",
+                planId = plan.planId,
+                currentTimestampMillis = 1_000L,
+                sampledFrameCount = 1L,
+                totalSampleCount = 3L,
+                executionGeneration = 5L,
+            ),
+        )
         val source = RecordingFrameSource()
         val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
         val enteredPausedState = CompletableDeferred<Unit>()
@@ -246,17 +322,17 @@ class RoomVideoAnalysisWorkerRunnerTest {
             ).run(TASK_ID, 5L) { }
         }
 
-        withTimeout(500L) { enteredPausedState.await() }
+        withTimeout(3_000L) { enteredPausedState.await() }
         lifecycleStore.cancel(TASK_ID)
-        val result = withTimeout(500L) { analysis.await() }
+        val result = withTimeout(3_000L) { analysis.await() }
 
         assertTrue(result is VideoAnalysisTaskResult.Cancelled)
         assertTrue(source.requestedTimestamps.isEmpty())
         val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
         assertEquals("CANCELLED", task.status)
         assertEquals(6L, task.executionGeneration)
-        assertEquals(0L, task.sampledFrameCount)
-        assertEquals(0L, task.currentTimestampMillis)
+        assertEquals(1L, task.sampledFrameCount)
+        assertEquals(1_000L, task.currentTimestampMillis)
     }
 
     @Test
@@ -433,6 +509,21 @@ class RoomVideoAnalysisWorkerRunnerTest {
         ): FrameModelResult = result(timestampMillis)
     }
 
+    private fun recordingAnalyzer(
+        highValues: MutableMap<Long, Boolean>,
+        onAnalyze: (Long) -> Unit = {},
+    ) = object : FrameModelAnalyzer {
+        override suspend fun analyze(
+            bitmap: Bitmap,
+            timestampMillis: Long,
+            highValue: Boolean,
+        ): FrameModelResult {
+            highValues[timestampMillis] = highValue
+            onAnalyze(timestampMillis)
+            return frameResult()
+        }
+    }
+
     private fun frameResult(
         labels: List<LabelScore> = emptyList(),
         embedding: FloatArray? = null,
@@ -489,8 +580,24 @@ class RoomVideoAnalysisWorkerRunnerTest {
         isSelected = false,
     )
 
+    private fun checkerboardBitmap(@Suppress("UNUSED_PARAMETER") timestampMillis: Long): Bitmap =
+        Bitmap.createBitmap(
+            intArrayOf(
+                0xFF404040.toInt(),
+                0xFFC0C0C0.toInt(),
+                0xFFC0C0C0.toInt(),
+                0xFF404040.toInt(),
+            ),
+            2,
+            2,
+            Bitmap.Config.ARGB_8888,
+        )
+
     private class RecordingFrameSource(
         private val closeFailure: Throwable? = null,
+        private val frameFactory: (Long) -> Bitmap = {
+            Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        },
     ) : VideoFrameSource {
         val requestedTimestamps = mutableListOf<Long>()
         var closed: Boolean = false
@@ -500,7 +607,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
 
         override fun getFrameAt(timestampMillis: Long): Bitmap {
             requestedTimestamps += timestampMillis
-            return Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+            return frameFactory(timestampMillis)
         }
 
         override fun close() {
