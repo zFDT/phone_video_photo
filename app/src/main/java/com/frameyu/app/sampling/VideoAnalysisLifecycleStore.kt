@@ -19,6 +19,12 @@ data class VideoAnalysisControlState(
     val executionGeneration: Long,
 )
 
+enum class VideoAnalysisClaimResult {
+    FRESH,
+    RESUME,
+    STALE,
+}
+
 interface VideoAnalysisLifecycleStore {
     suspend fun prepareExecution(taskId: Long): VideoAnalysisExecutionKey
 
@@ -33,7 +39,7 @@ interface VideoAnalysisLifecycleStore {
 }
 
 interface VideoAnalysisRunnerStore {
-    suspend fun claim(execution: VideoAnalysisExecutionKey): Boolean
+    suspend fun claim(execution: VideoAnalysisExecutionKey): VideoAnalysisClaimResult
 
     suspend fun controlState(taskId: Long): VideoAnalysisControlState?
 
@@ -108,20 +114,30 @@ class RoomVideoAnalysisLifecycleStore(
         updatedAtMillis = nowMillis(),
     ) == 1
 
-    override suspend fun claim(execution: VideoAnalysisExecutionKey): Boolean =
+    override suspend fun claim(
+        execution: VideoAnalysisExecutionKey,
+    ): VideoAnalysisClaimResult =
         database.withTransaction {
             val dao = database.analysisTaskDao()
             if (dao.claimExecution(
                     taskId = execution.taskId,
                     executionGeneration = execution.executionGeneration,
                     updatedAtMillis = nowMillis(),
-                ) != 1
+                ) == 1
             ) {
-                return@withTransaction false
+                val task = requireNotNull(dao.getTaskProgress(execution.taskId))
+                database.analysisCandidateDao().deleteByMediaAssetId(task.mediaAssetId)
+                return@withTransaction VideoAnalysisClaimResult.FRESH
             }
-            val task = requireNotNull(dao.getTaskProgress(execution.taskId))
-            database.analysisCandidateDao().deleteByMediaAssetId(task.mediaAssetId)
-            true
+            val task = dao.getTaskProgress(execution.taskId)
+            if (
+                task?.status == STATUS_RUNNING &&
+                task.executionGeneration == execution.executionGeneration
+            ) {
+                VideoAnalysisClaimResult.RESUME
+            } else {
+                VideoAnalysisClaimResult.STALE
+            }
         }
 
     override suspend fun controlState(taskId: Long): VideoAnalysisControlState? =
@@ -163,8 +179,9 @@ class RoomVideoAnalysisLifecycleStore(
 
     private companion object {
         const val STATUS_QUEUED = "QUEUED"
+        const val STATUS_RUNNING = "RUNNING"
         const val STATUS_COMPLETED = "COMPLETED"
         const val CANCELLED_MESSAGE = "用户取消分析"
-        val ACTIVE_STATUSES = setOf(STATUS_QUEUED, "RUNNING")
+        val ACTIVE_STATUSES = setOf(STATUS_QUEUED, STATUS_RUNNING)
     }
 }

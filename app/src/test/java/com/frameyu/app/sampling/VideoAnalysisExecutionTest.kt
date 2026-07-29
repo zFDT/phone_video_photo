@@ -1,5 +1,6 @@
 package com.frameyu.app.sampling
 
+import androidx.work.ListenableWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -31,6 +32,22 @@ class VideoAnalysisExecutionTest {
 
         assertEquals(listOf(1L, 2L, 3L, 4L), executed)
         assertEquals(results, outcomes.map(VideoAnalysisExecutionOutcome::result))
+    }
+
+    @Test
+    fun `Worker 边界将全部领域终态映射为 success`() {
+        val results = listOf(
+            VideoAnalysisTaskResult.Completed(progress()),
+            VideoAnalysisTaskResult.Cancelled(progress()),
+            VideoAnalysisTaskResult.Failed(progress(), IllegalStateException("分析失败")),
+            VideoAnalysisTaskResult.Skipped,
+        )
+
+        val workerResults = results.map {
+            VideoAnalysisExecutionOutcome(result = it).toWorkerResult()
+        }
+
+        assertTrue(workerResults.all { it is ListenableWorker.Result.Success })
     }
 
     @Test

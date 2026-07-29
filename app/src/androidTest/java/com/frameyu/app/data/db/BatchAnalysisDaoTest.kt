@@ -808,9 +808,9 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
-    fun migration3To5IsolatesExistingV4ActiveBatchesAndPreservesNewDefault() = runBlocking {
+    fun migration3To7IsolatesActiveBatchesAndInvalidatesLegacyVideoWork() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val databaseName = "batch-analysis-migration-3-5.db"
+        val databaseName = "batch-analysis-migration-3-7.db"
         context.deleteDatabase(databaseName)
         var roomDatabase: FrameYuDatabase? = null
         try {
@@ -895,6 +895,17 @@ class BatchAnalysisDaoTest {
                     )
                     """.trimIndent(),
                 )
+                database.execSQL(
+                    """
+                    INSERT INTO analysis_tasks (
+                        id, media_asset_id, status, progress, current_timestamp_millis,
+                        error_message, updated_at_millis, plan_id, range_index,
+                        sampled_frame_count, total_sample_count
+                    ) VALUES (
+                        99, 99, 'RUNNING', 50, 500, NULL, 1, 'legacy-plan', 0, 1, 2
+                    )
+                    """.trimIndent(),
+                )
                 database.execSQL("PRAGMA user_version = 3")
             }
 
@@ -918,10 +929,15 @@ class BatchAnalysisDaoTest {
                     seedActiveV4Batches,
                     FrameYuDatabase.MIGRATION_4_5,
                     FrameYuDatabase.MIGRATION_5_6,
+                    FrameYuDatabase.MIGRATION_6_7,
                 )
                 .build()
             roomDatabase = migratedDatabase
             assertEquals("content://media/99", migratedDatabase.mediaAssetDao().getById(99L)?.uri)
+            val migratedTask = migratedDatabase.analysisTaskDao().getTaskProgress(99L)!!
+            assertEquals("FAILED", migratedTask.status)
+            assertEquals(1L, migratedTask.executionGeneration)
+            assertEquals("应用升级后需重试视频分析", migratedTask.errorMessage)
             val dao = migratedDatabase.batchAnalysisDao()
             assertEquals(1L, dao.batchControlState(201L).executionGeneration)
             assertEquals(1L, dao.batchControlState(202L).executionGeneration)

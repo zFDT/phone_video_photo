@@ -131,16 +131,31 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `只有成功 claim 的新执行才清理候选帧`() = runBlocking {
+    fun `Fresh claim 清理候选帧且同代 RUNNING claim 恢复执行`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(task(status = "QUEUED", generation = 2L))
         database.analysisCandidateDao().upsertAll(listOf(candidate()))
         val execution = VideoAnalysisExecutionKey(1L, 2L)
 
-        assertFalse(store.claim(VideoAnalysisExecutionKey(1L, 1L)))
+        assertEquals(
+            VideoAnalysisClaimResult.STALE,
+            store.claim(VideoAnalysisExecutionKey(1L, 1L)),
+        )
         assertEquals(1, database.analysisCandidateDao().getByMediaAssetId(1L).size)
-        assertTrue(store.claim(execution))
+        assertEquals(VideoAnalysisClaimResult.FRESH, store.claim(execution))
         assertTrue(database.analysisCandidateDao().getByMediaAssetId(1L).isEmpty())
-        assertFalse(store.claim(execution))
+        assertEquals(VideoAnalysisClaimResult.RESUME, store.claim(execution))
+    }
+
+    @Test
+    fun `Resume claim 保留 checkpoint 前候选帧`() = runBlocking {
+        database.analysisTaskDao().saveTaskProgress(task(status = "RUNNING", generation = 2L))
+        database.analysisCandidateDao().upsertAll(listOf(candidate()))
+
+        assertEquals(
+            VideoAnalysisClaimResult.RESUME,
+            store.claim(VideoAnalysisExecutionKey(1L, 2L)),
+        )
+        assertEquals(listOf(11L), database.analysisCandidateDao().getByMediaAssetId(1L).map { it.id })
     }
 
     private fun media(id: Long) = MediaAssetEntity(

@@ -4,6 +4,8 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkInfo
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -52,6 +54,30 @@ class VideoAnalysisWorkSchedulerTest {
 
         assertEquals(activeRequestId, requestId)
         assertTrue(workManager.enqueuedRequests.isEmpty())
+    }
+
+    @Test
+    fun `双协程同时 enqueue 同一活动代只创建一个节点`() = runBlocking {
+        val enteredEnqueue = CompletableDeferred<Unit>()
+        val releaseEnqueue = CompletableDeferred<Unit>()
+        val workManager = FakeSchedulerWorkManager().apply {
+            beforeEnqueue = {
+                enteredEnqueue.complete(Unit)
+                releaseEnqueue.await()
+            }
+        }
+        val scheduler = VideoAnalysisWorkScheduler(
+            workManager,
+            RecordingVideoLifecycleStore(generation = 2L),
+        )
+
+        val first = async { scheduler.enqueue(7L) }
+        enteredEnqueue.await()
+        val second = async { scheduler.enqueue(7L) }
+        releaseEnqueue.complete(Unit)
+
+        assertEquals(first.await(), second.await())
+        assertEquals(1, workManager.enqueuedRequests.size)
     }
 
     @Test
@@ -159,12 +185,14 @@ private class FakeSchedulerWorkManager(
     var workManagerCancelCalls = 0
     var lookupFailuresRemaining = 0
     var lookupCalls = 0
+    var beforeEnqueue: suspend () -> Unit = {}
 
     override suspend fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
     ) {
+        beforeEnqueue()
         enqueuedPolicies += existingWorkPolicy
         enqueuedRequests += request
         enqueueFailure?.let {

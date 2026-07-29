@@ -82,20 +82,7 @@ class VideoAnalysisWorker(
                 outcome.persistenceError,
             )
         }
-        return Result.success(
-            when (val result = outcome.result) {
-                is VideoAnalysisTaskResult.Completed -> result.progress.toData()
-                is VideoAnalysisTaskResult.Cancelled -> result.progress.toData()
-                    .merge(errorData("分析任务已取消"))
-                is VideoAnalysisTaskResult.Failed -> result.progress.toData()
-                    .merge(errorData(result.error.message ?: "分析任务失败"))
-                VideoAnalysisTaskResult.Skipped, null -> Data.EMPTY
-            }
-                .let { data ->
-                    outcome.errorMessage?.let { message -> data.merge(errorData(message)) }
-                        ?: data
-                },
-        )
+        return outcome.toWorkerResult()
     }
 
     private fun createForegroundInfo(taskId: Long, percent: Int): ForegroundInfo = ForegroundInfo(
@@ -124,6 +111,26 @@ class VideoAnalysisWorker(
         private const val NOTIFICATION_ID = 10_001
     }
 }
+
+internal fun VideoAnalysisExecutionOutcome.toWorkerResult(): ListenableWorker.Result =
+    ListenableWorker.Result.success(
+        when (val taskResult = result) {
+            is VideoAnalysisTaskResult.Completed -> taskResult.progress.toData()
+            is VideoAnalysisTaskResult.Cancelled -> taskResult.progress.toData()
+                .merge(workerErrorData("分析任务已取消"))
+            is VideoAnalysisTaskResult.Failed -> taskResult.progress.toData()
+                .merge(workerErrorData(taskResult.error.message ?: "分析任务失败"))
+            VideoAnalysisTaskResult.Skipped, null -> Data.EMPTY
+        }
+            .let { data ->
+                errorMessage?.let { message -> data.merge(workerErrorData(message)) }
+                    ?: data
+            },
+    )
+
+private fun workerErrorData(message: String): Data = Data.Builder()
+    .putString(VideoAnalysisWorker.KEY_ERROR_MESSAGE, message)
+    .build()
 
 class VideoAnalysisWorkerFactory(
     private val runnerProvider: () -> VideoAnalysisWorkerRunner,

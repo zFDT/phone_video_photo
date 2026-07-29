@@ -140,6 +140,21 @@ class VideoAnalysisTaskTest {
     }
 
     @Test
+    fun `帧内协作停止信号转换为领域 Cancelled 且不推进 checkpoint`() = runBlocking {
+        val saved = mutableListOf<VideoAnalysisProgress>()
+
+        val result = VideoAnalysisTask(SamplingCheckpointStore { saved += it }).run(
+            SamplingPlan.create(1_000L),
+        ) {
+            throw VideoAnalysisControlChangedException()
+        }
+
+        assertTrue(result is VideoAnalysisTaskResult.Cancelled)
+        assertEquals(0L, (result as VideoAnalysisTaskResult.Cancelled).progress.sampledFrameCount)
+        assertTrue(saved.isEmpty())
+    }
+
+    @Test
     fun `协程取消和Error不会被转换为任务结果`() {
         val cancellation = CancellationException("cancel")
         val actualCancellation = assertThrows<CancellationException> {

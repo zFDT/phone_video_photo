@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.frameyu.app.data.db.AnalysisCandidateEntity
 import com.frameyu.app.data.db.AnalysisTaskEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import com.frameyu.app.data.db.MediaAssetEntity
@@ -18,11 +19,13 @@ import com.frameyu.app.vision.LabelScore
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -115,17 +118,20 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `恢复聚合包含checkpoint之前已落库的历史帧`() = runBlocking {
+    fun `同 generation RUNNING 重投从 checkpoint 续跑并保留历史规则候选`() = runBlocking {
         val plan = SamplingPlan.create(3_000L)
         seed(
             durationMillis = 3_000L,
             task = task(
+                status = "RUNNING",
                 planId = plan.planId,
                 currentTimestampMillis = 1_000L,
                 sampledFrameCount = 1L,
                 totalSampleCount = 3L,
+                executionGeneration = 5L,
             ),
         )
+        database.analysisCandidateDao().upsertAll(listOf(candidate()))
         store.saveFrameResult(
             MEDIA_ID,
             0L,
@@ -136,10 +142,15 @@ class RoomVideoAnalysisWorkerRunnerTest {
             frameResult(labels = listOf(LabelScore("concert", 0.9f)))
         }
 
-        val result = runner(analyzer, store, source).run(TASK_ID) { }
+        val result = runner(analyzer, store, source).run(TASK_ID, 5L) { }
 
         assertTrue(result is VideoAnalysisTaskResult.Completed)
         assertEquals(listOf(1_000L, 2_000L), source.requestedTimestamps)
+        assertTrue(
+            database.analysisCandidateDao().getByMediaAssetId(MEDIA_ID)
+                .any { it.id == HISTORICAL_CANDIDATE_ID },
+        )
+        assertEquals("COMPLETED", database.analysisTaskDao().getTaskProgress(TASK_ID)?.status)
         val aggregate = database.batchAnalysisDao().getClassifications(
             MEDIA_ID,
             VIDEO_AGGREGATE_TIMESTAMP_MILLIS,
@@ -214,6 +225,38 @@ class RoomVideoAnalysisWorkerRunnerTest {
         assertEquals(0L, task.sampledFrameCount)
         assertTrue(source.closed)
         assertTrue(source.requestedTimestamps.isEmpty())
+    }
+
+    @Test
+    fun `温控持续 PAUSED 时协作取消及时退出且不解码不推进 checkpoint`() = runBlocking {
+        seed(durationMillis = 1_000L, task = task(executionGeneration = 5L))
+        val source = RecordingFrameSource()
+        val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
+        val enteredPausedState = CompletableDeferred<Unit>()
+        val analysis = async {
+            runner(
+                analyzerProvider = { analyzer { frameResult() } },
+                frameStore = store,
+                source = source,
+                thermalStatusProvider = {
+                    enteredPausedState.complete(Unit)
+                    ThermalStatus.MODERATE
+                },
+                thermalPollIntervalMillis = 10L,
+            ).run(TASK_ID, 5L) { }
+        }
+
+        withTimeout(500L) { enteredPausedState.await() }
+        lifecycleStore.cancel(TASK_ID)
+        val result = withTimeout(500L) { analysis.await() }
+
+        assertTrue(result is VideoAnalysisTaskResult.Cancelled)
+        assertTrue(source.requestedTimestamps.isEmpty())
+        val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+        assertEquals("CANCELLED", task.status)
+        assertEquals(6L, task.executionGeneration)
+        assertEquals(0L, task.sampledFrameCount)
+        assertEquals(0L, task.currentTimestampMillis)
     }
 
     @Test
@@ -334,6 +377,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         frameStore: RoomVideoFrameModelStore,
         source: VideoFrameSource,
         thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
+        thermalPollIntervalMillis: Long = 5_000L,
         nowMillis: () -> Long = { 99L },
     ) = RoomVideoAnalysisWorkerRunner(
         context = context,
@@ -342,6 +386,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         frameModelStoreProvider = { frameStore },
         nowMillis = nowMillis,
         thermalStatusProvider = thermalStatusProvider,
+        thermalPollIntervalMillis = thermalPollIntervalMillis,
         frameSourceProvider = { source },
     )
 
@@ -409,6 +454,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     )
 
     private fun task(
+        status: String = "QUEUED",
         planId: String? = null,
         currentTimestampMillis: Long = 0L,
         sampledFrameCount: Long = 0L,
@@ -417,7 +463,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     ) = AnalysisTaskEntity(
         id = TASK_ID,
         mediaAssetId = MEDIA_ID,
-        status = "QUEUED",
+        status = status,
         progress = 0,
         currentTimestampMillis = currentTimestampMillis,
         errorMessage = null,
@@ -427,6 +473,20 @@ class RoomVideoAnalysisWorkerRunnerTest {
         sampledFrameCount = sampledFrameCount,
         totalSampleCount = totalSampleCount,
         executionGeneration = executionGeneration,
+    )
+
+    private fun candidate() = AnalysisCandidateEntity(
+        id = HISTORICAL_CANDIDATE_ID,
+        mediaAssetId = MEDIA_ID,
+        timestampMillis = 0L,
+        score = 1,
+        sharpnessScore = 1,
+        subjectScore = 1,
+        expressionScore = 1,
+        compositionScore = 1,
+        sceneScore = 1,
+        thumbnailPath = null,
+        isSelected = false,
     )
 
     private class RecordingFrameSource(
@@ -452,6 +512,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     private companion object {
         const val MEDIA_ID = 1L
         const val TASK_ID = 2L
+        const val HISTORICAL_CANDIDATE_ID = 99L
         val CLASSIFICATION_SHA = "a".repeat(64)
         val EMBEDDING_SHA = "b".repeat(64)
         val DETECTION_SHA = "c".repeat(64)

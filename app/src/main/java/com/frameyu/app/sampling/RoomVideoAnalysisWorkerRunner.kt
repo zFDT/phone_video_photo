@@ -53,6 +53,7 @@ class RoomVideoAnalysisWorkerRunner(
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val concertModeEnabledProvider: () -> Boolean = { false },
     private val thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
+    private val thermalPollIntervalMillis: Long = THERMAL_POLL_INTERVAL_MILLIS,
     private val frameSourceProvider: () -> VideoFrameSource = {
         MediaMetadataRetrieverFrameSource()
     },
@@ -80,7 +81,7 @@ class RoomVideoAnalysisWorkerRunner(
             },
             closeResource = { frameSource?.close() },
         ) {
-            if (!lifecycleStore.claim(execution)) {
+            if (lifecycleStore.claim(execution) == VideoAnalysisClaimResult.STALE) {
                 return@runTaskLifecycle VideoAnalysisTaskResult.Skipped
             }
             runAnalysis(execution, onProgress) { createdSource ->
@@ -165,7 +166,7 @@ class RoomVideoAnalysisWorkerRunner(
                     } == true
                 },
             ) { timestampMillis ->
-                awaitThermalWindow()
+                awaitThermalWindow(execution)
                 val bitmap = activeFrameSource.getFrameAt(timestampMillis)
                     ?: error("无法读取时间 ${timestampMillis}ms 的视频帧")
                 try {
@@ -225,12 +226,19 @@ class RoomVideoAnalysisWorkerRunner(
     }
 
     /** 温控暂停期间等待设备恢复；临界温度转为可持久化普通失败。 */
-    private suspend fun awaitThermalWindow() {
+    private suspend fun awaitThermalWindow(execution: VideoAnalysisExecutionKey) {
         val monitor = ThermalMonitor()
         while (true) {
+            val control = lifecycleStore.controlState(execution.taskId)
+            if (
+                control?.status != AnalysisTask.Status.RUNNING.name ||
+                control.executionGeneration != execution.executionGeneration
+            ) {
+                throw VideoAnalysisControlChangedException()
+            }
             when (monitor.stateFor(thermalStatusProvider())) {
                 ThermalState.RUNNING -> return
-                ThermalState.PAUSED -> delay(THERMAL_POLL_INTERVAL_MILLIS)
+                ThermalState.PAUSED -> delay(thermalPollIntervalMillis)
                 ThermalState.STOPPED -> throw ThermalProtectionException(
                     "设备温度过高，已暂停分析",
                 )

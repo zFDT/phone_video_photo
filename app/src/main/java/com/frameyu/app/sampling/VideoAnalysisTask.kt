@@ -23,6 +23,9 @@ fun interface SamplingCheckpointStore {
     suspend fun save(progress: VideoAnalysisProgress)
 }
 
+/** 数据库协作控制在帧处理期间发生变化，不属于协程取消。 */
+internal class VideoAnalysisControlChangedException : Exception()
+
 /** 长视频采样核心，不持有 Bitmap、解码器或音频副本，可被 WorkManager 调用。 */
 class VideoAnalysisTask(
     private val checkpointStore: SamplingCheckpointStore,
@@ -79,6 +82,16 @@ class VideoAnalysisTask(
             VideoAnalysisTaskResult.Completed(VideoAnalysisProgress(planId, plan.ranges.size, plan.videoDurationMillis, sampledCount, totalSampleCount))
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (_: VideoAnalysisControlChangedException) {
+            VideoAnalysisTaskResult.Cancelled(
+                VideoAnalysisProgress(
+                    planId,
+                    rangeIndex,
+                    nextTimestamp,
+                    sampledCount,
+                    totalSampleCount,
+                ),
+            )
         } catch (error: Exception) {
             VideoAnalysisTaskResult.Failed(VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount), error)
         }
