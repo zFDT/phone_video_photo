@@ -1,12 +1,15 @@
 package com.frameyu.app
 
-import android.content.ContentValues
+import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.IntentSender
 import android.net.Uri
 import android.os.Bundle
 import android.Manifest
 import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -43,7 +46,11 @@ import com.frameyu.app.organize.ContentHashDuplicateDetector
 import com.frameyu.app.organize.ContentHashReader
 import com.frameyu.app.organize.OrganizerRepository
 import com.frameyu.app.organize.MediaDeletionResult
+import com.frameyu.app.organize.MediaDeleteAttempt
+import com.frameyu.app.organize.MediaAuthorizationGate
 import com.frameyu.app.organize.executeMediaDeletion
+import com.frameyu.app.organize.executeRecoverableMediaDeletion
+import com.frameyu.app.organize.executeTrashRequestDeletion
 import com.frameyu.app.organize.sha256Hex
 import com.frameyu.app.organize.SimilarMediaDuplicateDetector
 import com.frameyu.app.organize.similarPhotoCandidates
@@ -55,6 +62,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -81,6 +91,9 @@ class MainActivity : ComponentActivity() {
     private var showOrganizer = mutableStateOf(false)
     private var showSettings = mutableStateOf(false)
     private var settingsSnapshot = mutableStateOf(SettingsSnapshot())
+    private val mediaAuthorizationGate = MediaAuthorizationGate()
+    private val mediaAuthorizationLock = Any()
+    private var pendingMediaAuthorization: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
     private val settingsStore by lazy {
         SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
     }
@@ -109,6 +122,16 @@ class MainActivity : ComponentActivity() {
     private val pickerLauncher = registerForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> uri?.let(mediaUriAccess::persistPhotoPickerReadPermission) }
+    private val mediaAuthorizationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        val continuation = synchronized(mediaAuthorizationLock) {
+            pendingMediaAuthorization.also { pendingMediaAuthorization = null }
+        }
+        if (continuation?.isActive == true) {
+            continuation.resume(result.resultCode == Activity.RESULT_OK)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -262,29 +285,86 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun moveToSystemTrash(uriStrings: List<String>): MediaDeletionResult = withContext(Dispatchers.IO) {
-        executeMediaDeletion(
-            uris = uriStrings,
-            deleteOne = { uriString ->
-                val uri = Uri.parse(uriString)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentResolver.update(
-                        uri,
-                        ContentValues().apply {
-                            put(MediaStore.MediaColumns.IS_TRASHED, 1)
-                        },
-                        null,
-                        null,
-                    ) > 0
-                } else {
-                    contentResolver.delete(uri, null, null) > 0
+    private suspend fun moveToSystemTrash(uriStrings: List<String>): MediaDeletionResult =
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> executeTrashRequestDeletion(
+                uris = uriStrings,
+                requestTrash = { requestedUris ->
+                    val pendingIntent = MediaStore.createTrashRequest(
+                        contentResolver,
+                        requestedUris.map(Uri::parse),
+                        true,
+                    )
+                    awaitMediaAuthorization(pendingIntent.intentSender)
+                },
+                removeSucceededFromIndex = ::removeMediaFromIndex,
+            )
+            Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> executeRecoverableMediaDeletion(
+                uris = uriStrings,
+                deleteOne = { uriString ->
+                    try {
+                        val deleted = withContext(Dispatchers.IO) {
+                            contentResolver.delete(Uri.parse(uriString), null, null) > 0
+                        }
+                        if (deleted) MediaDeleteAttempt.Deleted else MediaDeleteAttempt.NotHandled
+                    } catch (securityError: RecoverableSecurityException) {
+                        MediaDeleteAttempt.RequiresAuthorization {
+                            awaitMediaAuthorization(
+                                securityError.userAction.actionIntent.intentSender,
+                            )
+                        }
+                    }
+                },
+                removeSucceededFromIndex = ::removeMediaFromIndex,
+            )
+            else -> withContext(Dispatchers.IO) {
+                executeMediaDeletion(
+                    uris = uriStrings,
+                    deleteOne = { uriString ->
+                        contentResolver.delete(Uri.parse(uriString), null, null) > 0
+                    },
+                    removeSucceededFromIndex = ::removeMediaFromIndex,
+                )
+            }
+        }
+
+    private suspend fun awaitMediaAuthorization(intentSender: IntentSender): Boolean =
+        mediaAuthorizationGate.run {
+            suspendCancellableCoroutine { continuation ->
+                synchronized(mediaAuthorizationLock) {
+                    check(pendingMediaAuthorization == null) { "已有媒体授权请求正在等待结果" }
+                    pendingMediaAuthorization = continuation
                 }
-            },
-            removeSucceededFromIndex = { succeededUris ->
-                (application as FrameYuApplication).database.mediaAssetDao()
-                    .deleteByUris(succeededUris)
-            },
-        )
+                continuation.invokeOnCancellation {
+                    synchronized(mediaAuthorizationLock) {
+                        if (pendingMediaAuthorization === continuation) {
+                            pendingMediaAuthorization = null
+                        }
+                    }
+                }
+                try {
+                    mediaAuthorizationLauncher.launch(
+                        IntentSenderRequest.Builder(intentSender).build(),
+                    )
+                } catch (error: Exception) {
+                    val shouldResume = synchronized(mediaAuthorizationLock) {
+                        if (pendingMediaAuthorization === continuation) {
+                            pendingMediaAuthorization = null
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (shouldResume && continuation.isActive) {
+                        continuation.resumeWithException(error)
+                    }
+                }
+            }
+        }
+
+    private suspend fun removeMediaFromIndex(succeededUris: List<String>) {
+        (application as FrameYuApplication).database.mediaAssetDao()
+            .deleteByUris(succeededUris)
     }
 
     /** 以分块流读取媒体，避免长视频在完全重复扫描时一次性进入内存。 */

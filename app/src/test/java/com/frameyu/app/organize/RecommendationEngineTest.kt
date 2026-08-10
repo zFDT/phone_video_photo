@@ -349,6 +349,36 @@ class RecommendationEngineTest {
     }
 
     @Test
+    fun `其他筛选中的建议保留 ID 和 URI 也会锁定当前删除候选`() {
+        val exact = recommendationGroup(
+            id = "exact",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L), reviewItem(3L), reviewItem(4L)),
+        )
+        val similar = recommendationGroup(
+            id = "similar",
+            filter = OrganizerFilter.SIMILAR_MEDIA,
+            suggestedKeepId = 2L,
+            items = listOf(reviewItem(2L), reviewItem(5L)),
+        )
+        val videoHighlight = recommendationGroup(
+            id = "video-highlight",
+            filter = OrganizerFilter.VIDEO_HIGHLIGHT,
+            suggestedKeepId = 6L,
+            items = listOf(reviewItem(6L, uri = "content://media/3")),
+        )
+
+        val plan = buildDeletionPlan(
+            groups = listOf(exact, similar, videoHighlight),
+            visibleFilter = OrganizerFilter.EXACT_DUPLICATE,
+            selectedMediaIds = setOf(2L, 3L, 4L),
+        )
+
+        assertEquals(setOf(4L), plan.mediaIds)
+    }
+
+    @Test
     fun `组内重复 ID 或 URI 的组不会生成删除候选`() {
         val duplicateId = recommendationGroup(
             id = "duplicate-id",

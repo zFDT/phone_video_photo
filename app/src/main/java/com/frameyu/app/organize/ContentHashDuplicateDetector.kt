@@ -1,6 +1,9 @@
 package com.frameyu.app.organize
 
 import com.frameyu.app.data.db.MediaAssetEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.security.MessageDigest
 
 /** 按内容 SHA-256 分组的完全重复检测结果；读取失败的媒体不会被误判为重复。 */
@@ -22,11 +25,15 @@ class ContentHashDuplicateDetector(
         val buckets = linkedMapOf<String, MutableList<MediaAssetEntity>>()
         val failedUris = mutableListOf<String>()
         assets.forEach { asset ->
-            val hash = runCatching { sha256(reader.readChunks(asset.uri)) }
-                .getOrElse {
-                    failedUris += asset.uri
-                    return@forEach
-                }
+            currentCoroutineContext().ensureActive()
+            val hash = try {
+                sha256(reader.readChunks(asset.uri))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                failedUris += asset.uri
+                return@forEach
+            }
             buckets.getOrPut(hash) { mutableListOf() } += asset
         }
         return ContentHashDuplicateResult(
@@ -41,9 +48,12 @@ class ContentHashDuplicateDetector(
         )
     }
 
-    private fun sha256(chunks: Iterable<ByteArray>): String {
+    private suspend fun sha256(chunks: Iterable<ByteArray>): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        chunks.forEach { digest.update(it) }
+        chunks.forEach { chunk ->
+            currentCoroutineContext().ensureActive()
+            digest.update(chunk)
+        }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 

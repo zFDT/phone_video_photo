@@ -230,8 +230,8 @@ fun buildDeletionPlan(
 ): DeletionPlan {
     val visibleGroups = groups.filter { group -> group.filter == visibleFilter }
     val safeGroups = safeDeletionGroups(visibleGroups)
-    val lockedIds = visibleGroups.mapNotNullTo(hashSetOf(), OrganizationGroup::suggestedKeepId)
-    val lockedUris = visibleGroups.mapNotNullTo(hashSetOf()) { group ->
+    val lockedIds = groups.mapNotNullTo(hashSetOf(), OrganizationGroup::suggestedKeepId)
+    val lockedUris = groups.mapNotNullTo(hashSetOf()) { group ->
         group.suggestedKeepId?.let { keepId ->
             group.items.singleOrNull { item -> item.mediaId == keepId }?.uri
         }

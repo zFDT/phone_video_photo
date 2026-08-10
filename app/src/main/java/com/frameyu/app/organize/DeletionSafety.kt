@@ -2,6 +2,8 @@ package com.frameyu.app.organize
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 
@@ -92,6 +94,119 @@ data class MediaDeletionResult(
     val succeededUris: List<String>,
     val failures: List<MediaDeletionFailure>,
 )
+
+sealed interface MediaDeleteAttempt {
+    data object Deleted : MediaDeleteAttempt
+
+    data object NotHandled : MediaDeleteAttempt
+
+    data class RequiresAuthorization(
+        val authorize: suspend () -> Boolean,
+    ) : MediaDeleteAttempt
+}
+
+/** 确保同一 Activity 同时只挂起一个系统授权面板。 */
+class MediaAuthorizationGate {
+    private val mutex = Mutex()
+
+    suspend fun <T> run(block: suspend () -> T): T = mutex.withLock { block() }
+}
+
+/** Android 11+ 的系统回收站请求：只有系统确认成功后才同步本地索引。 */
+suspend fun executeTrashRequestDeletion(
+    uris: List<String>,
+    requestTrash: suspend (List<String>) -> Boolean,
+    removeSucceededFromIndex: suspend (List<String>) -> Unit,
+): MediaDeletionResult {
+    if (uris.isEmpty()) return MediaDeletionResult(emptyList(), emptyList())
+    val approved = try {
+        requestTrash(uris)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        return MediaDeletionResult(
+            succeededUris = emptyList(),
+            failures = uris.map { uri ->
+                MediaDeletionFailure(uri, error.message ?: "系统授权请求失败")
+            },
+        )
+    }
+    if (!approved) {
+        return MediaDeletionResult(
+            succeededUris = emptyList(),
+            failures = uris.map { uri -> MediaDeletionFailure(uri, "用户取消系统删除授权") },
+        )
+    }
+    withContext(NonCancellable) {
+        removeSucceededFromIndex(uris)
+    }
+    return MediaDeletionResult(
+        succeededUris = uris.toList(),
+        failures = emptyList(),
+    )
+}
+
+/** Android 10 的逐项删除：遇到可恢复授权时，仅授权并重试当前 Uri 一次。 */
+suspend fun executeRecoverableMediaDeletion(
+    uris: List<String>,
+    deleteOne: suspend (String) -> MediaDeleteAttempt,
+    removeSucceededFromIndex: suspend (List<String>) -> Unit,
+): MediaDeletionResult {
+    val succeeded = mutableListOf<String>()
+    val failures = mutableListOf<MediaDeletionFailure>()
+    try {
+        uris.forEach { uri ->
+            try {
+                when (val firstAttempt = deleteOne(uri)) {
+                    MediaDeleteAttempt.Deleted -> succeeded += uri
+                    MediaDeleteAttempt.NotHandled -> {
+                        failures += MediaDeletionFailure(uri, "系统未处理该媒体")
+                    }
+                    is MediaDeleteAttempt.RequiresAuthorization -> {
+                        val approved = firstAttempt.authorize()
+                        if (!approved) {
+                            failures += MediaDeletionFailure(uri, "用户取消系统删除授权")
+                        } else {
+                            when (deleteOne(uri)) {
+                                MediaDeleteAttempt.Deleted -> succeeded += uri
+                                MediaDeleteAttempt.NotHandled -> {
+                                    failures += MediaDeletionFailure(uri, "系统未处理该媒体")
+                                }
+                                is MediaDeleteAttempt.RequiresAuthorization -> {
+                                    failures += MediaDeletionFailure(uri, "系统仍需媒体删除授权")
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                failures += MediaDeletionFailure(uri, error.message ?: "未知错误")
+            }
+        }
+    } catch (cancelled: CancellationException) {
+        if (succeeded.isNotEmpty()) {
+            try {
+                withContext(NonCancellable) {
+                    removeSucceededFromIndex(succeeded.toList())
+                }
+            } catch (syncError: Exception) {
+                cancelled.addSuppressed(syncError)
+            }
+        }
+        throw cancelled
+    }
+    if (succeeded.isNotEmpty()) {
+        withContext(NonCancellable) {
+            removeSucceededFromIndex(succeeded.toList())
+        }
+    }
+    return MediaDeletionResult(
+        succeededUris = succeeded.toList(),
+        failures = failures.toList(),
+    )
+}
 
 suspend fun executeMediaDeletion(
     uris: List<String>,

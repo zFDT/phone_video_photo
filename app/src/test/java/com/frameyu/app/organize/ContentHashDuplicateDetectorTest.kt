@@ -1,8 +1,12 @@
 package com.frameyu.app.organize
 
 import com.frameyu.app.data.db.MediaAssetEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,6 +32,48 @@ class ContentHashDuplicateDetectorTest {
 
         assertTrue(result.groups.isEmpty())
         assertEquals(listOf(failedUri), result.failedUris)
+    }
+
+    @Test
+    fun `读取器取消会立即传播而不是记录为普通失败`() = runBlocking {
+        val cancellation = CancellationException("用户取消扫描")
+        val detector = ContentHashDuplicateDetector(ContentHashReader { throw cancellation })
+
+        val thrown = runCatching {
+            detector.detect(listOf(media("content://cancelled", 1L)))
+        }.exceptionOrNull()
+
+        assertSame(cancellation, thrown)
+    }
+
+    @Test
+    fun `分块计算在一兆字节边界检查协程取消`() = runBlocking {
+        val scanJob = Job()
+        var chunksRead = 0
+        val chunks = Iterable {
+            listOf(ByteArray(1024 * 1024), ByteArray(1024 * 1024)).iterator().let { delegate ->
+                object : Iterator<ByteArray> {
+                    override fun hasNext(): Boolean = delegate.hasNext()
+
+                    override fun next(): ByteArray {
+                        chunksRead += 1
+                        return delegate.next().also {
+                            if (chunksRead == 1) scanJob.cancel(CancellationException("停止长视频扫描"))
+                        }
+                    }
+                }
+            }
+        }
+        val detector = ContentHashDuplicateDetector(ContentHashReader { chunks })
+
+        val thrown = runCatching {
+            withContext(scanJob) {
+                detector.detect(listOf(media("content://long-video", 1L)))
+            }
+        }.exceptionOrNull()
+
+        assertTrue(thrown is CancellationException)
+        assertEquals(1, chunksRead)
     }
 
     private fun media(uri: String, takenAtMillis: Long) = MediaAssetEntity(
