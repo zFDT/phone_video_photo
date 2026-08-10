@@ -35,10 +35,16 @@ import com.frameyu.app.export.VideoClipExporter
 import com.frameyu.app.export.GifExporter
 import com.frameyu.app.export.MotionPhotoExporter
 import com.frameyu.app.organize.AndroidVisualHashReader
+import com.frameyu.app.organize.AndroidLiveMediaMetadataReader
+import com.frameyu.app.organize.ContentSha256Reader
+import com.frameyu.app.organize.DeletionSafetyValidator
 import com.frameyu.app.organize.DuplicateDetector
 import com.frameyu.app.organize.ContentHashDuplicateDetector
 import com.frameyu.app.organize.ContentHashReader
 import com.frameyu.app.organize.OrganizerRepository
+import com.frameyu.app.organize.MediaDeletionResult
+import com.frameyu.app.organize.executeMediaDeletion
+import com.frameyu.app.organize.sha256Hex
 import com.frameyu.app.organize.SimilarMediaDuplicateDetector
 import com.frameyu.app.organize.similarPhotoCandidates
 import com.frameyu.app.ui.organize.OrganizerScreen
@@ -79,10 +85,19 @@ class MainActivity : ComponentActivity() {
         SettingsStore(getSharedPreferences(SettingsStore.PREFERENCES_NAME, MODE_PRIVATE))
     }
     private val organizerRepository by lazy {
+        val hashReader = contentHashReader()
         OrganizerRepository(
             detector = DuplicateDetector(),
-            contentHashDetector = ContentHashDuplicateDetector(contentHashReader()),
+            contentHashDetector = ContentHashDuplicateDetector(hashReader),
             deleter = ::moveToSystemTrash,
+            deletionSafetyValidator = DeletionSafetyValidator(
+                metadataReader = AndroidLiveMediaMetadataReader(contentResolver),
+                sha256Reader = ContentSha256Reader { uri ->
+                    withContext(Dispatchers.IO) {
+                        sha256Hex(hashReader.readChunks(uri))
+                    }
+                },
+            ),
         )
     }
     private val similarMediaDuplicateDetector by lazy {
@@ -247,21 +262,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun moveToSystemTrash(uris: List<Uri>) = withContext(Dispatchers.IO) {
-        uris.forEach { uri ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentResolver.update(
-                    uri,
-                    ContentValues().apply {
-                        put(MediaStore.MediaColumns.IS_TRASHED, 1)
-                    },
-                    null,
-                    null,
-                )
-            } else {
-                contentResolver.delete(uri, null, null)
-            }
-        }
+    private suspend fun moveToSystemTrash(uriStrings: List<String>): MediaDeletionResult = withContext(Dispatchers.IO) {
+        executeMediaDeletion(
+            uris = uriStrings,
+            deleteOne = { uriString ->
+                val uri = Uri.parse(uriString)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentResolver.update(
+                        uri,
+                        ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_TRASHED, 1)
+                        },
+                        null,
+                        null,
+                    ) > 0
+                } else {
+                    contentResolver.delete(uri, null, null) > 0
+                }
+            },
+            removeSucceededFromIndex = { succeededUris ->
+                (application as FrameYuApplication).database.mediaAssetDao()
+                    .deleteByUris(succeededUris)
+            },
+        )
     }
 
     /** 以分块流读取媒体，避免长视频在完全重复扫描时一次性进入内存。 */

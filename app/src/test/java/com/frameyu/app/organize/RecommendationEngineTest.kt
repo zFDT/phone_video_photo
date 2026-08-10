@@ -104,7 +104,7 @@ class RecommendationEngineTest {
     }
 
     @Test
-    fun `手动快照会移除已从媒体索引删除的成员和选择`() {
+    fun `手动快照任一成员从媒体索引消失时整组和旧选择失效`() {
         val group = recommendationGroup(
             id = "exact",
             filter = OrganizerFilter.EXACT_DUPLICATE,
@@ -117,11 +117,9 @@ class RecommendationEngineTest {
             currentAssets = listOf(media(1L), media(3L)),
         )
 
-        assertEquals(setOf(1L, 3L), revalidated.single().items.map { it.mediaId }.toSet())
-        assertEquals(
-            setOf(3L),
-            reconcileSelectedMediaIds(revalidated, setOf(2L, 3L, 99L)),
-        )
+        assertTrue(revalidated.isEmpty())
+        assertTrue(reconcileSelectedMediaIds(revalidated, setOf(2L, 3L, 99L)).isEmpty())
+        assertEquals(setOf(1L, 2L, 3L), invalidatedManualMediaIds(listOf(group), listOf(media(1L), media(3L))))
     }
 
     @Test
@@ -136,6 +134,27 @@ class RecommendationEngineTest {
         val revalidated = revalidateManualGroups(
             groups = listOf(group),
             currentAssets = listOf(media(1L), media(2L, uri = "content://media/2/changed")),
+        )
+
+        assertTrue(revalidated.isEmpty())
+    }
+
+    @Test
+    fun `手动快照成员大小或修改时间变化时会失效`() {
+        val group = recommendationGroup(
+            id = "similar",
+            filter = OrganizerFilter.SIMILAR_MEDIA,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L), reviewItem(3L)),
+        )
+
+        val revalidated = revalidateManualGroups(
+            groups = listOf(group),
+            currentAssets = listOf(
+                media(1L),
+                media(2L).copy(sizeBytes = 200L),
+                media(3L).copy(lastModifiedMillis = 300L),
+            ),
         )
 
         assertTrue(revalidated.isEmpty())
@@ -190,7 +209,7 @@ class RecommendationEngineTest {
     }
 
     @Test
-    fun `删除计划冻结媒体 ID 和 URI 且数据删除后验证失败`() {
+    fun `删除计划冻结被删项版本和受影响完整组`() {
         val group = recommendationGroup(
             id = "exact",
             filter = OrganizerFilter.EXACT_DUPLICATE,
@@ -203,8 +222,26 @@ class RecommendationEngineTest {
             selectedMediaIds = setOf(2L),
         )
 
-        assertEquals(listOf(DeletionPlanItem(2L, "content://media/2")), plan.items)
+        assertEquals(
+            listOf(DeletionPlanItem(2L, "content://media/2", 2L, 2L)),
+            plan.items,
+        )
         assertEquals(setOf(2L), plan.mediaIds)
+        assertEquals(
+            listOf(
+                DeletionPlanGroup(
+                    id = "exact",
+                    filter = OrganizerFilter.EXACT_DUPLICATE,
+                    suggestedKeepId = 1L,
+                    items = listOf(
+                        DeletionPlanItem(1L, "content://media/1", 1L, 1L),
+                        DeletionPlanItem(2L, "content://media/2", 2L, 2L),
+                    ),
+                    exactContentHash = "sha-256",
+                ),
+            ),
+            plan.affectedGroups,
+        )
         assertFalse(
             validateDeletionPlan(
                 plan = plan,
@@ -251,6 +288,122 @@ class RecommendationEngineTest {
     }
 
     @Test
+    fun `确认时建议保留项版本变化也会阻止旧计划`() {
+        val initial = recommendationGroup(
+            id = "exact",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L)),
+        )
+        val plan = buildDeletionPlan(
+            groups = listOf(initial),
+            visibleFilter = OrganizerFilter.EXACT_DUPLICATE,
+            selectedMediaIds = setOf(2L),
+        )
+        val changedKeep = initial.copy(
+            items = listOf(reviewItem(1L, sizeBytes = 99L), reviewItem(2L)),
+        )
+
+        assertFalse(
+            validateDeletionPlan(
+                plan,
+                listOf(changedKeep),
+                OrganizerFilter.EXACT_DUPLICATE,
+                setOf(2L),
+            ),
+        )
+    }
+
+    @Test
+    fun `同一筛选的跨组建议保留 ID 和 URI 全局锁定`() {
+        val first = recommendationGroup(
+            id = "first",
+            filter = OrganizerFilter.SIMILAR_MEDIA,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L), reviewItem(3L)),
+        )
+        val second = recommendationGroup(
+            id = "second",
+            filter = OrganizerFilter.SIMILAR_MEDIA,
+            suggestedKeepId = 2L,
+            items = listOf(
+                reviewItem(2L, uri = "content://other/2"),
+                reviewItem(4L, uri = "content://media/1"),
+                reviewItem(5L),
+            ),
+        )
+        val unaffected = recommendationGroup(
+            id = "unaffected",
+            filter = OrganizerFilter.SIMILAR_MEDIA,
+            suggestedKeepId = 6L,
+            items = listOf(reviewItem(6L), reviewItem(7L)),
+        )
+
+        val plan = buildDeletionPlan(
+            groups = listOf(first, second, unaffected),
+            visibleFilter = OrganizerFilter.SIMILAR_MEDIA,
+            selectedMediaIds = setOf(1L, 2L, 3L, 4L, 5L, 7L),
+        )
+
+        assertEquals(setOf(7L), plan.mediaIds)
+    }
+
+    @Test
+    fun `组内重复 ID 或 URI 的组不会生成删除候选`() {
+        val duplicateId = recommendationGroup(
+            id = "duplicate-id",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L), reviewItem(2L, uri = "content://copy/2")),
+        )
+        val duplicateUri = recommendationGroup(
+            id = "duplicate-uri",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 3L,
+            items = listOf(reviewItem(3L), reviewItem(4L), reviewItem(5L, uri = "content://media/4")),
+        )
+
+        val plan = buildDeletionPlan(
+            groups = listOf(duplicateId, duplicateUri),
+            visibleFilter = OrganizerFilter.EXACT_DUPLICATE,
+            selectedMediaIds = setOf(2L, 4L, 5L),
+        )
+
+        assertTrue(plan.items.isEmpty())
+        assertTrue(plan.affectedGroups.isEmpty())
+    }
+
+    @Test
+    fun `跨组 ID 或 URI 重叠的组不会生成删除候选`() {
+        val first = recommendationGroup(
+            id = "first",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 1L,
+            items = listOf(reviewItem(1L), reviewItem(2L), reviewItem(3L)),
+        )
+        val second = recommendationGroup(
+            id = "second",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 4L,
+            items = listOf(reviewItem(4L), reviewItem(2L), reviewItem(5L)),
+        )
+        val third = recommendationGroup(
+            id = "third",
+            filter = OrganizerFilter.EXACT_DUPLICATE,
+            suggestedKeepId = 6L,
+            items = listOf(reviewItem(6L), reviewItem(7L, uri = "content://media/3")),
+        )
+
+        val plan = buildDeletionPlan(
+            groups = listOf(first, second, third),
+            visibleFilter = OrganizerFilter.EXACT_DUPLICATE,
+            selectedMediaIds = setOf(2L, 3L, 5L, 7L),
+        )
+
+        assertTrue(plan.items.isEmpty())
+    }
+
+    @Test
     fun `删除计划不会在确认期间扩大选择集合`() {
         val initial = recommendationGroup(
             id = "exact",
@@ -285,18 +438,23 @@ class RecommendationEngineTest {
         confidence = RecommendationConfidence.HIGH,
         suggestedKeepId = suggestedKeepId,
         items = items,
+        exactContentHash = if (filter == OrganizerFilter.EXACT_DUPLICATE) "sha-256" else null,
     )
 
     private fun reviewItem(
         id: Long,
         selectedByDefault: Boolean = false,
         uri: String = "content://media/$id",
+        sizeBytes: Long = id,
+        lastModifiedMillis: Long = id,
     ) = OrganizationMediaItem(
         mediaId = id,
         uri = uri,
         label = "媒体 $id",
         selectableForDeletion = true,
         selectedByDefault = selectedByDefault,
+        sizeBytes = sizeBytes,
+        lastModifiedMillis = lastModifiedMillis,
     )
 
     private fun media(

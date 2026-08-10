@@ -1,6 +1,6 @@
 package com.frameyu.app.organize
 
-import com.frameyu.app.data.db.AnalysisCandidateEntity
+import com.frameyu.app.data.db.AnalysisCandidateSummary
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.data.db.MediaQualityResultEntity
 import org.junit.Assert.assertEquals
@@ -11,7 +11,7 @@ import org.junit.Test
 class OrganizerRepositoryTest {
     private val repository = OrganizerRepository(
         detector = DuplicateDetector(),
-        deleter = {},
+        deleter = { MediaDeletionResult(emptyList(), emptyList()) },
     )
 
     @Test
@@ -24,7 +24,13 @@ class OrganizerRepositoryTest {
         val groups = repository.persistedGroups(
             assets = listOf(screenshot, recording, lowQuality, highlight),
             qualityResults = listOf(quality(lowQuality.id, 0.2f)),
-            candidates = listOf(candidate(highlight.id)),
+            candidateSummaries = listOf(
+                AnalysisCandidateSummary(
+                    mediaAssetId = highlight.id,
+                    candidateCount = 3L,
+                    maxScore = 92,
+                ),
+            ),
         )
 
         assertEquals(
@@ -42,6 +48,10 @@ class OrganizerRepositoryTest {
         assertFalse(
             groups.single { it.filter == OrganizerFilter.VIDEO_HIGHLIGHT }
                 .items.single().selectableForDeletion,
+        )
+        assertEquals(
+            "已保存 3 个精彩候选帧，最高评分 92",
+            groups.single { it.filter == OrganizerFilter.VIDEO_HIGHLIGHT }.items.single().detail,
         )
     }
 
@@ -70,20 +80,6 @@ class OrganizerRepositoryTest {
         exposureScore = score,
         noiseScore = score,
         compositionScore = score,
-    )
-
-    private fun candidate(mediaId: Long) = AnalysisCandidateEntity(
-        id = mediaId,
-        mediaAssetId = mediaId,
-        timestampMillis = 1_000L,
-        score = 80,
-        sharpnessScore = 80,
-        subjectScore = 80,
-        expressionScore = 80,
-        compositionScore = 80,
-        sceneScore = 80,
-        thumbnailPath = null,
-        isSelected = false,
     )
 
     private fun media(id: Long, mimeType: String, path: String) = MediaAssetEntity(

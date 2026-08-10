@@ -1,9 +1,8 @@
 package com.frameyu.app.organize
 
-import android.net.Uri
 import com.frameyu.app.album.AlbumCategory
 import com.frameyu.app.album.AlbumClassifier
-import com.frameyu.app.data.db.AnalysisCandidateEntity
+import com.frameyu.app.data.db.AnalysisCandidateSummary
 import com.frameyu.app.data.db.MediaAssetEntity
 import com.frameyu.app.data.db.MediaQualityResultEntity
 
@@ -11,7 +10,8 @@ import com.frameyu.app.data.db.MediaQualityResultEntity
 class OrganizerRepository(
     private val detector: DuplicateDetector,
     private val contentHashDetector: ContentHashDuplicateDetector? = null,
-    private val deleter: suspend (List<Uri>) -> Unit,
+    private val deleter: suspend (List<String>) -> MediaDeletionResult,
+    private val deletionSafetyValidator: DeletionSafetyValidator = DeletionSafetyValidator.unavailable(),
     private val recommendationEngine: RecommendationEngine = RecommendationEngine(),
     private val albumClassifier: AlbumClassifier = AlbumClassifier(),
 ) {
@@ -27,7 +27,7 @@ class OrganizerRepository(
     fun persistedGroups(
         assets: List<MediaAssetEntity>,
         qualityResults: List<MediaQualityResultEntity>,
-        candidates: List<AnalysisCandidateEntity>,
+        candidateSummaries: List<AnalysisCandidateSummary>,
     ): List<OrganizationGroup> {
         val assetsById = assets.associateBy(MediaAssetEntity::id)
         val latestQualityByMedia = qualityResults.distinctBy(MediaQualityResultEntity::mediaAssetId)
@@ -50,10 +50,10 @@ class OrganizerRepository(
                     add(asset.toCategoryGroup(OrganizerFilter.SCREEN_RECORDING))
                 }
             }
-            candidates.groupBy(AnalysisCandidateEntity::mediaAssetId).forEach { (mediaId, frames) ->
-                val asset = assetsById[mediaId] ?: return@forEach
+            candidateSummaries.forEach { summary ->
+                val asset = assetsById[summary.mediaAssetId] ?: return@forEach
                 if (asset.mimeType.startsWith(VIDEO_MIME_PREFIX)) {
-                    add(asset.toVideoHighlightGroup(frames))
+                    add(asset.toVideoHighlightGroup(summary))
                 }
             }
         }
@@ -71,9 +71,14 @@ class OrganizerRepository(
                 .toGroup(OrganizerFilter.SIMILAR_MEDIA)
         }
 
-    /** 仅删除调用方明确传入的 Uri，并交给注入的删除器执行。 */
-    suspend fun delete(uris: List<Uri>) {
-        deleter(uris.toList())
+    /** live 验证冻结计划后，仅把计划内 Uri 交给注入的删除器。 */
+    suspend fun delete(plan: DeletionPlan): DeletionExecutionResult {
+        return when (val validation = deletionSafetyValidator.validate(plan)) {
+            DeletionValidationResult.Valid -> DeletionExecutionResult.Completed(
+                deleter(plan.items.map(DeletionPlanItem::uri)),
+            )
+            is DeletionValidationResult.Blocked -> DeletionExecutionResult.Blocked(validation.reason)
+        }
     }
 
     private fun OrganizationRecommendation.toGroup(filter: OrganizerFilter): OrganizationGroup =
@@ -82,10 +87,17 @@ class OrganizerRepository(
             filter = filter,
             confidence = confidence,
             suggestedKeepId = suggestedKeepId,
+            exactContentHash = if (filter == OrganizerFilter.EXACT_DUPLICATE) {
+                id.removePrefix("exact:")
+            } else {
+                null
+            },
             items = media.map { asset ->
                 OrganizationMediaItem(
                     mediaId = asset.id,
                     uri = asset.uri,
+                    sizeBytes = asset.sizeBytes,
+                    lastModifiedMillis = asset.lastModifiedMillis,
                     label = displayName(asset),
                     selectableForDeletion = asset.id != suggestedKeepId,
                     selectedByDefault = asset.id in defaultSelectedMediaIds,
@@ -103,6 +115,8 @@ class OrganizerRepository(
                 OrganizationMediaItem(
                     mediaId = id,
                     uri = uri,
+                    sizeBytes = sizeBytes,
+                    lastModifiedMillis = lastModifiedMillis,
                     label = displayName(this),
                     selectableForDeletion = true,
                 ),
@@ -110,7 +124,7 @@ class OrganizerRepository(
         )
 
     private fun MediaAssetEntity.toVideoHighlightGroup(
-        frames: List<AnalysisCandidateEntity>,
+        summary: AnalysisCandidateSummary,
     ): OrganizationGroup = OrganizationGroup(
         id = "video-highlight:$id",
         filter = OrganizerFilter.VIDEO_HIGHLIGHT,
@@ -120,9 +134,11 @@ class OrganizerRepository(
             OrganizationMediaItem(
                 mediaId = id,
                 uri = uri,
+                sizeBytes = sizeBytes,
+                lastModifiedMillis = lastModifiedMillis,
                 label = displayName(this),
                 selectableForDeletion = false,
-                detail = "已保存 ${frames.size} 个精彩候选帧，最高评分 ${frames.maxOf { it.score }}",
+                detail = "已保存 ${summary.candidateCount} 个精彩候选帧，最高评分 ${summary.maxScore}",
             ),
         ),
     )

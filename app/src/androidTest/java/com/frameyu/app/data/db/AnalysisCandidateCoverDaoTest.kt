@@ -17,6 +17,56 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AnalysisCandidateCoverDaoTest {
     @Test
+    fun deleteMediaByUrisOnlyRemovesRequestedAssetsAndCascadesCandidates() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            database.analysisCandidateDao().upsertAll(
+                listOf(candidate(11L, 1L), candidate(21L, 2L)),
+            )
+
+            val deleted = database.mediaAssetDao().deleteByUris(listOf("content://media/1"))
+
+            assertEquals(1, deleted)
+            assertNull(database.mediaAssetDao().getById(1L))
+            assertTrue(database.analysisCandidateDao().getByMediaAssetId(1L).isEmpty())
+            assertTrue(database.mediaAssetDao().getById(2L) != null)
+            assertEquals(1, database.analysisCandidateDao().getByMediaAssetId(2L).size)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun candidateSummariesGroupByMediaWithCountAndMaxScore() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            database.analysisCandidateDao().upsertAll(
+                listOf(
+                    candidate(11L, 1L).copy(score = 20),
+                    candidate(12L, 1L).copy(score = 80),
+                    candidate(21L, 2L).copy(score = 60),
+                ),
+            )
+
+            val summaries = database.analysisCandidateDao().observeSummaries().first()
+
+            assertEquals(
+                listOf(
+                    AnalysisCandidateSummary(1L, 2L, 80),
+                    AnalysisCandidateSummary(2L, 1L, 60),
+                ),
+                summaries,
+            )
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun setCoverClearsOtherCandidatesForSameMedia() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()

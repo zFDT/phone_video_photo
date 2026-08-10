@@ -93,6 +93,8 @@ enum class OrganizerFilter {
 data class OrganizationMediaItem(
     val mediaId: Long,
     val uri: String,
+    val sizeBytes: Long,
+    val lastModifiedMillis: Long,
     val label: String,
     val selectableForDeletion: Boolean,
     val selectedByDefault: Boolean = false,
@@ -105,39 +107,56 @@ data class OrganizationGroup(
     val confidence: RecommendationConfidence?,
     val suggestedKeepId: Long?,
     val items: List<OrganizationMediaItem>,
+    val exactContentHash: String? = null,
 )
 
 data class DeletionPlanItem(
     val mediaId: Long,
     val uri: String,
+    val sizeBytes: Long,
+    val lastModifiedMillis: Long,
+)
+
+data class DeletionPlanGroup(
+    val id: String,
+    val filter: OrganizerFilter,
+    val suggestedKeepId: Long?,
+    val items: List<DeletionPlanItem>,
+    val exactContentHash: String?,
 )
 
 class DeletionPlan(
     val visibleFilter: OrganizerFilter,
     items: List<DeletionPlanItem>,
+    affectedGroups: List<DeletionPlanGroup> = emptyList(),
 ) {
     val items: List<DeletionPlanItem> = items.toList()
+    val affectedGroups: List<DeletionPlanGroup> = affectedGroups.map { group ->
+        group.copy(items = group.items.toList())
+    }
     val mediaIds: Set<Long> = items.mapTo(linkedSetOf(), DeletionPlanItem::mediaId)
 
     override fun equals(other: Any?): Boolean =
         this === other ||
             other is DeletionPlan &&
             visibleFilter == other.visibleFilter &&
-            items == other.items
+            items == other.items &&
+            affectedGroups == other.affectedGroups
 
-    override fun hashCode(): Int = 31 * visibleFilter.hashCode() + items.hashCode()
+    override fun hashCode(): Int =
+        31 * (31 * visibleFilter.hashCode() + items.hashCode()) + affectedGroups.hashCode()
 }
 
 fun defaultSelectedMediaIds(groups: List<OrganizationGroup>): Set<Long> =
-    groups.asSequence()
+    buildDeletionPlan(
+        groups = groups,
+        visibleFilter = OrganizerFilter.EXACT_DUPLICATE,
+        selectedMediaIds = groups.asSequence()
         .filter { it.filter == OrganizerFilter.EXACT_DUPLICATE }
-        .flatMap { group ->
-            group.items.asSequence()
-                .filter(OrganizationMediaItem::selectedByDefault)
-                .map(OrganizationMediaItem::mediaId)
-                .filterNot { it == group.suggestedKeepId }
-        }
-        .toSet()
+            .flatMap(OrganizationGroup::items)
+            .filter(OrganizationMediaItem::selectedByDefault)
+            .mapTo(linkedSetOf(), OrganizationMediaItem::mediaId),
+    ).mediaIds
 
 fun canSelectForDeletion(group: OrganizationGroup, mediaId: Long): Boolean =
     mediaId != group.suggestedKeepId &&
@@ -152,14 +171,18 @@ fun revalidateManualGroups(
     val currentAssetsById = currentAssets.associateBy(MediaAssetEntity::id)
     return groups.mapNotNull { group ->
         val suggestedKeepId = group.suggestedKeepId ?: return@mapNotNull null
-        val validItems = group.items.filter { item ->
-            currentAssetsById[item.mediaId]?.uri == item.uri
+        val allItemsAreCurrent = group.items.all { item ->
+            currentAssetsById[item.mediaId]?.let { current ->
+                current.uri == item.uri &&
+                    current.sizeBytes == item.sizeBytes &&
+                    current.lastModifiedMillis == item.lastModifiedMillis
+            } == true
         }
-        val suggestedKeepIsValid = validItems.any { item -> item.mediaId == suggestedKeepId }
-        if (!suggestedKeepIsValid || validItems.size < 2) {
+        val suggestedKeepIsValid = group.items.any { item -> item.mediaId == suggestedKeepId }
+        if (!allItemsAreCurrent || !suggestedKeepIsValid || group.items.size < 2) {
             null
         } else {
-            group.copy(items = validItems)
+            group
         }
     }
 }
@@ -205,14 +228,28 @@ fun buildDeletionPlan(
     visibleFilter: OrganizerFilter,
     selectedMediaIds: Set<Long>,
 ): DeletionPlan {
-    val candidates = groups.asSequence()
-        .filter { group -> group.filter == visibleFilter }
-        .flatMap { group ->
-            group.items.asSequence()
-                .filter { item -> item.mediaId in selectedMediaIds }
-                .filter { item -> canSelectForDeletion(group, item.mediaId) }
-                .map { item -> DeletionPlanItem(item.mediaId, item.uri) }
+    val visibleGroups = groups.filter { group -> group.filter == visibleFilter }
+    val safeGroups = safeDeletionGroups(visibleGroups)
+    val lockedIds = visibleGroups.mapNotNullTo(hashSetOf(), OrganizationGroup::suggestedKeepId)
+    val lockedUris = visibleGroups.mapNotNullTo(hashSetOf()) { group ->
+        group.suggestedKeepId?.let { keepId ->
+            group.items.singleOrNull { item -> item.mediaId == keepId }?.uri
         }
+    }
+    val selectedByGroup = linkedMapOf<OrganizationGroup, List<DeletionPlanItem>>()
+    safeGroups.forEach { group ->
+        val selectedItems = group.items.asSequence()
+            .filter { item -> item.mediaId in selectedMediaIds }
+            .filter { item -> canSelectForDeletion(group, item.mediaId) }
+            .filterNot { item -> item.mediaId in lockedIds || item.uri in lockedUris }
+            .map(OrganizationMediaItem::toDeletionPlanItem)
+            .toList()
+        if (selectedItems.isNotEmpty()) {
+            selectedByGroup[group] = selectedItems
+        }
+    }
+    val candidates = selectedByGroup.values.asSequence()
+        .flatten()
         .groupBy(DeletionPlanItem::mediaId)
         .mapNotNull { (_, items) ->
             items.firstOrNull()?.takeIf { candidate ->
@@ -220,11 +257,59 @@ fun buildDeletionPlan(
             }
         }
         .sortedWith(compareBy(DeletionPlanItem::mediaId).thenBy(DeletionPlanItem::uri))
+    val candidateSet = candidates.toSet()
+    val affectedGroups = selectedByGroup
+        .filterValues { selectedItems -> selectedItems.any(candidateSet::contains) }
+        .keys
+        .map { group ->
+            DeletionPlanGroup(
+                id = group.id,
+                filter = group.filter,
+                suggestedKeepId = group.suggestedKeepId,
+                items = group.items.map(OrganizationMediaItem::toDeletionPlanItem),
+                exactContentHash = group.exactContentHash,
+            )
+        }
     return DeletionPlan(
         visibleFilter = visibleFilter,
         items = candidates.toList(),
+        affectedGroups = affectedGroups,
     )
 }
+
+private fun safeDeletionGroups(groups: List<OrganizationGroup>): List<OrganizationGroup> {
+    val locallySafe = groups.map { group ->
+        val ids = group.items.map(OrganizationMediaItem::mediaId)
+        val uris = group.items.map(OrganizationMediaItem::uri)
+        ids.size == ids.toSet().size &&
+            uris.size == uris.toSet().size &&
+            (group.suggestedKeepId == null || ids.count { it == group.suggestedKeepId } == 1) &&
+            (group.filter != OrganizerFilter.EXACT_DUPLICATE || !group.exactContentHash.isNullOrBlank())
+    }
+    val groupsById = buildMap<Long, MutableSet<Int>> {
+        groups.forEachIndexed { index, group ->
+            group.items.forEach { item -> getOrPut(item.mediaId) { linkedSetOf() } += index }
+        }
+    }
+    val groupsByUri = buildMap<String, MutableSet<Int>> {
+        groups.forEachIndexed { index, group ->
+            group.items.forEach { item -> getOrPut(item.uri) { linkedSetOf() } += index }
+        }
+    }
+    val overlappingGroupIndexes = (groupsById.values + groupsByUri.values)
+        .asSequence()
+        .filter { indexes -> indexes.size > 1 }
+        .flatten()
+        .toSet()
+    return groups.filterIndexed { index, _ -> locallySafe[index] && index !in overlappingGroupIndexes }
+}
+
+private fun OrganizationMediaItem.toDeletionPlanItem(): DeletionPlanItem = DeletionPlanItem(
+    mediaId = mediaId,
+    uri = uri,
+    sizeBytes = sizeBytes,
+    lastModifiedMillis = lastModifiedMillis,
+)
 
 fun validateDeletionPlan(
     plan: DeletionPlan,

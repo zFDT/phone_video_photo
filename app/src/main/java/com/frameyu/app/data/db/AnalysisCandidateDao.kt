@@ -1,6 +1,7 @@
 package com.frameyu.app.data.db
 
 import androidx.room.Dao
+import androidx.room.ColumnInfo
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -8,9 +9,30 @@ import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
+data class AnalysisCandidateSummary(
+    @ColumnInfo(name = "media_asset_id")
+    val mediaAssetId: Long,
+    @ColumnInfo(name = "candidate_count")
+    val candidateCount: Long,
+    @ColumnInfo(name = "max_score")
+    val maxScore: Int,
+)
+
 /** 按媒体资源管理分析候选帧。 */
 @Dao
 interface AnalysisCandidateDao {
+    @Query(
+        """
+        SELECT media_asset_id,
+               COUNT(*) AS candidate_count,
+               MAX(score) AS max_score
+        FROM analysis_candidates
+        GROUP BY media_asset_id
+        ORDER BY media_asset_id
+        """
+    )
+    fun observeSummaries(): Flow<List<AnalysisCandidateSummary>>
+
     @Query("SELECT * FROM analysis_candidates ORDER BY score DESC, id")
     fun observeAll(): Flow<List<AnalysisCandidateEntity>>
 

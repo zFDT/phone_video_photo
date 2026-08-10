@@ -1,6 +1,5 @@
 package com.frameyu.app.organize
 
-import android.net.Uri
 import com.frameyu.app.data.db.MediaAssetEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -51,10 +50,13 @@ class DuplicateDetectorTest {
 
     @Test
     fun `查询重复候选不会触发删除`() = runBlocking {
-        val deletedUris = mutableListOf<List<Uri>>()
+        val deletedUris = mutableListOf<List<String>>()
         val repository = OrganizerRepository(
             detector = DuplicateDetector { "duplicate" },
-            deleter = { uris -> deletedUris.add(uris) },
+            deleter = { uris ->
+                deletedUris.add(uris)
+                MediaDeletionResult(uris, emptyList())
+            },
         )
 
         repository.duplicateCandidates(listOf(media("content://media/one.jpg"), media("content://media/two.jpg")))
@@ -64,13 +66,16 @@ class DuplicateDetectorTest {
 
     @Test
     fun `完全重复扫描通过仓库暴露且不会触发删除`() = runBlocking {
-        val deletedUris = mutableListOf<List<Uri>>()
+        val deletedUris = mutableListOf<List<String>>()
         val first = media("content://media/one.jpg")
         val second = media("content://media/two.jpg")
         val repository = OrganizerRepository(
             detector = DuplicateDetector(),
             contentHashDetector = ContentHashDuplicateDetector(ContentHashReader { listOf("same".toByteArray()) }),
-            deleter = { uris -> deletedUris.add(uris) },
+            deleter = { uris ->
+                deletedUris.add(uris)
+                MediaDeletionResult(uris, emptyList())
+            },
         )
 
         val result = repository.exactDuplicateCandidates(listOf(first, second))
@@ -80,20 +85,39 @@ class DuplicateDetectorTest {
     }
 
     @Test
-    fun `显式删除只把传入的 Uri 列表交给注入的删除器`() = runBlocking {
-        val deletedUris = mutableListOf<List<Uri>>()
+    fun `显式删除只把冻结计划内的 Uri 列表交给注入的删除器`() = runBlocking {
+        val deletedUris = mutableListOf<List<String>>()
         val repository = OrganizerRepository(
             detector = DuplicateDetector(),
-            deleter = { uris -> deletedUris.add(uris) },
+            deleter = { uris ->
+                deletedUris.add(uris)
+                MediaDeletionResult(uris, emptyList())
+            },
+            deletionSafetyValidator = DeletionSafetyValidator(
+                metadataReader = LiveMediaMetadataReader { item ->
+                    LiveMediaMetadata(item.mediaId, item.uri, item.sizeBytes, item.lastModifiedMillis)
+                },
+                sha256Reader = ContentSha256Reader { "hash" },
+            ),
         )
-        val uris = listOf(
-            Uri.EMPTY,
-            Uri.EMPTY,
+        val item = DeletionPlanItem(1L, "content://media/1", 1L, 1L)
+        val plan = DeletionPlan(
+            visibleFilter = OrganizerFilter.LOW_QUALITY,
+            items = listOf(item),
+            affectedGroups = listOf(
+                DeletionPlanGroup(
+                    id = "low:1",
+                    filter = OrganizerFilter.LOW_QUALITY,
+                    suggestedKeepId = null,
+                    items = listOf(item),
+                    exactContentHash = null,
+                ),
+            ),
         )
 
-        repository.delete(uris)
+        repository.delete(plan)
 
-        assertEquals(listOf(uris), deletedUris)
+        assertEquals(listOf(listOf(item.uri)), deletedUris)
     }
 
     private fun media(
