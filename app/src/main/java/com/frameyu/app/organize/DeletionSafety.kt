@@ -284,18 +284,26 @@ fun sha256Hex(chunks: Iterable<ByteArray>): String {
 }
 
 suspend fun sha256HexCancellable(inputStream: InputStream): String = inputStream.use { stream ->
+    sha256HexCancellable(stream, SHA_256_BUFFER_SIZE)
+}
+
+suspend fun sha256HexCancellable(
+    inputStream: InputStream,
+    bufferSize: Int,
+): String {
+    require(bufferSize > 0) { "摘要读取缓冲区必须大于零" }
     val digest = MessageDigest.getInstance("SHA-256")
-    val buffer = ByteArray(SHA_256_BUFFER_SIZE)
+    val buffer = ByteArray(bufferSize)
     while (true) {
         currentCoroutineContext().ensureActive()
-        val count = stream.read(buffer)
+        val count = inputStream.read(buffer)
         currentCoroutineContext().ensureActive()
         if (count < 0) break
         if (count > 0) {
             digest.update(buffer, 0, count)
         }
     }
-    digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
 }
 
 private const val SHA_256_BUFFER_SIZE = 1024 * 1024

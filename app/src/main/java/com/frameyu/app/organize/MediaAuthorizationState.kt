@@ -113,10 +113,9 @@ class MediaAuthorizationStateReducer(
 
     fun recover(current: PendingMediaAuthorization?): MediaAuthorizationAction = when {
         current == null -> MediaAuthorizationAction.None
+        isExpired(current) -> expiredReconciliationAction(current)
         current.phase == PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION ->
             reconciliationAction(current)
-        current.phase == PendingMediaAuthorizationPhase.AWAITING_RESULT && isExpired(current) ->
-            expiredReconciliationAction(current)
         else -> MediaAuthorizationAction.None
     }
 
@@ -154,7 +153,6 @@ class MediaAuthorizationStateReducer(
         expired: PendingMediaAuthorization,
     ): PendingMediaAuthorization? = if (
         current == expired &&
-        expired.phase == PendingMediaAuthorizationPhase.AWAITING_RESULT &&
         isExpired(expired)
     ) {
         null

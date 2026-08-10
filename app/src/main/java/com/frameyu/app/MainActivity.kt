@@ -124,11 +124,7 @@ class MainActivity : ComponentActivity() {
             deletionSafetyValidator = DeletionSafetyValidator(
                 metadataReader = AndroidLiveMediaMetadataReader(contentResolver),
                 sha256Reader = ContentSha256Reader { uri ->
-                    withContext(Dispatchers.IO) {
-                        val input = contentResolver.openInputStream(Uri.parse(uri))
-                            ?: error("无法打开媒体：$uri")
-                        sha256HexCancellable(input)
-                    }
+                    hashReader.sha256(uri)
                 },
             ),
         )
@@ -712,19 +708,14 @@ class MainActivity : ComponentActivity() {
     private fun newMediaAuthorizationRequestId(): String =
         UUID.randomUUID().toString().replace("-", "")
 
-    /** 以分块流读取媒体，避免长视频在完全重复扫描时一次性进入内存。 */
+    /** 在 Reader 调用内完成 1MB 分块摘要和关闭，不把 lazy 流泄露到检测器。 */
     private fun contentHashReader(): ContentHashReader = ContentHashReader { uri ->
-        sequence<ByteArray> {
+        withContext(Dispatchers.IO) {
             val input = contentResolver.openInputStream(Uri.parse(uri)) ?: error("无法打开媒体：$uri")
             input.use { stream ->
-                val buffer = ByteArray(HASH_BUFFER_SIZE)
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count <= 0) break
-                    yield(buffer.copyOf(count))
-                }
+                sha256HexCancellable(stream, HASH_BUFFER_SIZE)
             }
-        }.asIterable()
+        }
     }
 
     private companion object {

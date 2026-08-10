@@ -11,7 +11,7 @@ class MediaAuthorizationStateTest {
     private val reducer = MediaAuthorizationStateReducer(clock = { nowMillis })
 
     @Test
-    fun `恢复已授权回收站请求会继续 Room 对账`() {
+    fun `fresh granted 回收站请求继续普通 Room 对账`() {
         val pending = trashPending(
             phase = PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION,
         )
@@ -22,6 +22,46 @@ class MediaAuthorizationStateTest {
             MediaAuthorizationAction.ReconcileTrash(listOf("content://media/1", "content://media/2")),
             action,
         )
+    }
+
+    @Test
+    fun `expired granted 回收站请求走过期安全对账`() {
+        val pending = trashPending(
+            phase = PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION,
+            createdAtMillis = nowMillis - MEDIA_AUTHORIZATION_EXPIRY_MILLIS,
+        )
+
+        assertEquals(
+            MediaAuthorizationAction.ReconcileExpiredTrash(pending.uris),
+            reducer.recover(pending),
+        )
+    }
+
+    @Test
+    fun `expired granted Android Q 请求走当前 URI 过期对账`() {
+        val pending = recoverablePending(
+            phase = PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION,
+            createdAtMillis = nowMillis - MEDIA_AUTHORIZATION_EXPIRY_MILLIS,
+        )
+
+        assertEquals(
+            MediaAuthorizationAction.ReconcileExpiredRecoverableDelete("content://media/3"),
+            reducer.recover(pending),
+        )
+    }
+
+    @Test
+    fun `expired granted 在 UNKNOWN 对账后仍可清锁并接受新请求`() {
+        val pending = trashPending(
+            phase = PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION,
+            createdAtMillis = nowMillis - MEDIA_AUTHORIZATION_EXPIRY_MILLIS,
+        )
+
+        val cleared = reducer.clearExpired(pending, pending)
+        val next = reducer.begin(cleared, recoverablePending())
+
+        assertNull(cleared)
+        assertSame(MediaAuthorizationAction.None, next.action)
     }
 
     @Test
@@ -206,7 +246,7 @@ class MediaAuthorizationStateTest {
     }
 
     @Test
-    fun `只有匹配且过期的等待请求可以释放持久锁`() {
+    fun `只有匹配且过期的请求可以释放持久锁`() {
         val stale = trashPending(
             createdAtMillis = nowMillis - MEDIA_AUTHORIZATION_EXPIRY_MILLIS,
         )
@@ -279,6 +319,7 @@ class MediaAuthorizationStateTest {
     )
 
     private fun recoverablePending(
+        phase: PendingMediaAuthorizationPhase = PendingMediaAuthorizationPhase.AWAITING_RESULT,
         createdAtMillis: Long = nowMillis,
     ) = PendingMediaAuthorization(
         requestId = REQUEST_ID_Q,
@@ -286,6 +327,7 @@ class MediaAuthorizationStateTest {
         requestType = PendingMediaAuthorizationType.RECOVERABLE_DELETE,
         uris = listOf("content://media/3"),
         currentUri = "content://media/3",
+        phase = phase,
     )
 
     private companion object {

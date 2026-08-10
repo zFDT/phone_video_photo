@@ -71,7 +71,9 @@ class DuplicateDetectorTest {
         val second = media("content://media/two.jpg")
         val repository = OrganizerRepository(
             detector = DuplicateDetector(),
-            contentHashDetector = ContentHashDuplicateDetector(ContentHashReader { listOf("same".toByteArray()) }),
+            contentHashDetector = ContentHashDuplicateDetector(
+                ContentHashReader { sha256Hex(listOf("same".toByteArray())) },
+            ),
             deleter = { uris ->
                 deletedUris.add(uris)
                 MediaDeletionResult(uris, emptyList())
