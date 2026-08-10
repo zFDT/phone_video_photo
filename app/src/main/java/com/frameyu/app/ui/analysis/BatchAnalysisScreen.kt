@@ -7,7 +7,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -112,23 +115,26 @@ fun BatchAnalysisScreen(
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-                state.failureItems.take(MAX_VISIBLE_FAILURES).forEach { failure ->
-                    Text(
-                        text = "媒体 ${failure.mediaAssetId} · ${failure.stageLabel} · ${failure.statusLabel}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        text = failure.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                    )
-                }
-                if (state.failureItems.size > MAX_VISIBLE_FAILURES) {
-                    Text(
-                        text = "另有 ${state.failureItems.size - MAX_VISIBLE_FAILURES} 项失败",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 240.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(state.failureItems, key = BatchFailureUiItem::id) { failure ->
+                        Column {
+                            Text(
+                                text = "媒体 ${failure.mediaAssetId} · " +
+                                    "${failure.stageLabel} · ${failure.statusLabel}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                text = failure.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                 }
             }
             if (state.status == "RUNNING" || state.status == "QUEUED") {
@@ -192,5 +198,3 @@ fun BatchAnalysisScreen(
         }
     }
 }
-
-private const val MAX_VISIBLE_FAILURES = 3

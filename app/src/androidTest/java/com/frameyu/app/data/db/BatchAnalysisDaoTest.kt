@@ -58,6 +58,7 @@ class BatchAnalysisDaoTest {
 
             assertEquals(2, failedItems.size)
             assertEquals(listOf(1L, 2L), failedItems.map { it.mediaAssetId })
+            assertEquals(listOf("QUALITY", "CLASSIFICATION"), failedItems.map { it.stage })
             assertEquals(
                 listOf("RETRYABLE_FAILED", "PERMANENT_FAILED"),
                 failedItems.map { it.status },
