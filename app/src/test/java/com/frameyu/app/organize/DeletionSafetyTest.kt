@@ -1,7 +1,9 @@
 package com.frameyu.app.organize
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -15,6 +17,37 @@ class DeletionSafetyTest {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             sha256Hex(listOf("abc".toByteArray())),
         )
+    }
+
+    @Test
+    fun `可取消内容摘要在完整读取前传播取消`() = runBlocking {
+        val scanJob = Job()
+        var chunksRead = 0
+        val chunks = Iterable {
+            listOf(ByteArray(1024 * 1024), ByteArray(1024 * 1024)).iterator().let { delegate ->
+                object : Iterator<ByteArray> {
+                    override fun hasNext(): Boolean = delegate.hasNext()
+
+                    override fun next(): ByteArray {
+                        chunksRead += 1
+                        return delegate.next().also {
+                            if (chunksRead == 1) {
+                                scanJob.cancel(CancellationException("停止删除复验"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val thrown = runCatching {
+            withContext(scanJob) {
+                sha256HexCancellable(chunks)
+            }
+        }.exceptionOrNull()
+
+        assertTrue(thrown is CancellationException)
+        assertEquals(1, chunksRead)
     }
 
     @Test

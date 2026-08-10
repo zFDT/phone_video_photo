@@ -2,6 +2,8 @@ package com.frameyu.app.organize
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -151,14 +153,20 @@ suspend fun executeRecoverableMediaDeletion(
     uris: List<String>,
     deleteOne: suspend (String) -> MediaDeleteAttempt,
     removeSucceededFromIndex: suspend (List<String>) -> Unit,
+    onAuthorizedRetrySettled: suspend (String) -> Unit = {},
 ): MediaDeletionResult {
     val succeeded = mutableListOf<String>()
+    val pendingSync = mutableListOf<String>()
     val failures = mutableListOf<MediaDeletionFailure>()
     try {
         uris.forEach { uri ->
+            var settleAuthorizationOnError = false
             try {
                 when (val firstAttempt = deleteOne(uri)) {
-                    MediaDeleteAttempt.Deleted -> succeeded += uri
+                    MediaDeleteAttempt.Deleted -> {
+                        succeeded += uri
+                        pendingSync += uri
+                    }
                     MediaDeleteAttempt.NotHandled -> {
                         failures += MediaDeletionFailure(uri, "系统未处理该媒体")
                     }
@@ -167,12 +175,29 @@ suspend fun executeRecoverableMediaDeletion(
                         if (!approved) {
                             failures += MediaDeletionFailure(uri, "用户取消系统删除授权")
                         } else {
+                            settleAuthorizationOnError = true
                             when (deleteOne(uri)) {
-                                MediaDeleteAttempt.Deleted -> succeeded += uri
+                                MediaDeleteAttempt.Deleted -> {
+                                    try {
+                                        withContext(NonCancellable) {
+                                            removeSucceededFromIndex(listOf(uri))
+                                        }
+                                    } catch (error: Exception) {
+                                        settleAuthorizationOnError = false
+                                        throw error
+                                    }
+                                    settleAuthorizationOnError = false
+                                    onAuthorizedRetrySettled(uri)
+                                    succeeded += uri
+                                }
                                 MediaDeleteAttempt.NotHandled -> {
+                                    settleAuthorizationOnError = false
+                                    onAuthorizedRetrySettled(uri)
                                     failures += MediaDeletionFailure(uri, "系统未处理该媒体")
                                 }
                                 is MediaDeleteAttempt.RequiresAuthorization -> {
+                                    settleAuthorizationOnError = false
+                                    onAuthorizedRetrySettled(uri)
                                     failures += MediaDeletionFailure(uri, "系统仍需媒体删除授权")
                                 }
                             }
@@ -182,14 +207,17 @@ suspend fun executeRecoverableMediaDeletion(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (settleAuthorizationOnError) {
+                    onAuthorizedRetrySettled(uri)
+                }
                 failures += MediaDeletionFailure(uri, error.message ?: "未知错误")
             }
         }
     } catch (cancelled: CancellationException) {
-        if (succeeded.isNotEmpty()) {
+        if (pendingSync.isNotEmpty()) {
             try {
                 withContext(NonCancellable) {
-                    removeSucceededFromIndex(succeeded.toList())
+                    removeSucceededFromIndex(pendingSync.toList())
                 }
             } catch (syncError: Exception) {
                 cancelled.addSuppressed(syncError)
@@ -197,9 +225,9 @@ suspend fun executeRecoverableMediaDeletion(
         }
         throw cancelled
     }
-    if (succeeded.isNotEmpty()) {
+    if (pendingSync.isNotEmpty()) {
         withContext(NonCancellable) {
-            removeSucceededFromIndex(succeeded.toList())
+            removeSucceededFromIndex(pendingSync.toList())
         }
     }
     return MediaDeletionResult(
@@ -251,6 +279,15 @@ suspend fun executeMediaDeletion(
 fun sha256Hex(chunks: Iterable<ByteArray>): String {
     val digest = MessageDigest.getInstance("SHA-256")
     chunks.forEach(digest::update)
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
+suspend fun sha256HexCancellable(chunks: Iterable<ByteArray>): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    chunks.forEach { chunk ->
+        currentCoroutineContext().ensureActive()
+        digest.update(chunk)
+    }
     return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
 }
 

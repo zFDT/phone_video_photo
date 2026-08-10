@@ -51,6 +51,7 @@ class MediaDeletionAuthorizationTest {
     fun `Android 10 授权成功后只重试当前 URI 并同步成功项`() = runBlocking {
         val attempts = mutableMapOf<String, Int>()
         val synced = mutableListOf<List<String>>()
+        val settled = mutableListOf<String>()
 
         val result = executeRecoverableMediaDeletion(
             uris = listOf("protected", "plain"),
@@ -63,11 +64,54 @@ class MediaDeletionAuthorizationTest {
                 }
             },
             removeSucceededFromIndex = { synced += it },
+            onAuthorizedRetrySettled = { settled += it },
         )
 
         assertEquals(mapOf("protected" to 2, "plain" to 1), attempts)
         assertEquals(listOf("protected", "plain"), result.succeededUris)
-        assertEquals(listOf(listOf("protected", "plain")), synced)
+        assertEquals(listOf(listOf("protected"), listOf("plain")), synced)
+        assertEquals(listOf("protected"), settled)
+    }
+
+    @Test
+    fun `Android 10 每个授权 URI 对账完成后才进入下一授权`() = runBlocking {
+        val attempts = mutableMapOf<String, Int>()
+        val events = mutableListOf<String>()
+
+        val result = executeRecoverableMediaDeletion(
+            uris = listOf("first", "second"),
+            deleteOne = { uri ->
+                val attempt = attempts.getOrDefault(uri, 0) + 1
+                attempts[uri] = attempt
+                if (attempt == 1) {
+                    MediaDeleteAttempt.RequiresAuthorization {
+                        events += "authorized:$uri"
+                        true
+                    }
+                } else {
+                    MediaDeleteAttempt.Deleted
+                }
+            },
+            removeSucceededFromIndex = { uris ->
+                events += "synced:${uris.single()}"
+            },
+            onAuthorizedRetrySettled = { uri ->
+                events += "settled:$uri"
+            },
+        )
+
+        assertEquals(listOf("first", "second"), result.succeededUris)
+        assertEquals(
+            listOf(
+                "authorized:first",
+                "synced:first",
+                "settled:first",
+                "authorized:second",
+                "synced:second",
+                "settled:second",
+            ),
+            events,
+        )
     }
 
     @Test
