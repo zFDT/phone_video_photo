@@ -149,7 +149,7 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
-    fun observeFailedItemsReturnsPersistedFailureDetails() = runBlocking {
+    fun observeFailedItemsReturnsBoundedPersistedFailureDetailsInStableOrder() = runBlocking {
         val database = createDatabase()
         try {
             database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
@@ -177,19 +177,13 @@ class BatchAnalysisDaoTest {
                 updatedAtMillis = 5L,
             )
 
-            val failedItems = dao.observeFailedItems(batchId).first()
+            val failedItems = dao.observeFailedItems(batchId, limit = 1).first()
 
-            assertEquals(2, failedItems.size)
-            assertEquals(listOf(1L, 2L), failedItems.map { it.mediaAssetId })
-            assertEquals(listOf("QUALITY", "CLASSIFICATION"), failedItems.map { it.stage })
-            assertEquals(
-                listOf("RETRYABLE_FAILED", "PERMANENT_FAILED"),
-                failedItems.map { it.status },
-            )
-            assertEquals(
-                listOf("图片暂时无法读取", "模型输出不受支持"),
-                failedItems.map { it.errorMessage },
-            )
+            assertEquals(1, failedItems.size)
+            assertEquals(listOf(1L), failedItems.map { it.mediaAssetId })
+            assertEquals(listOf("QUALITY"), failedItems.map { it.stage })
+            assertEquals(listOf("RETRYABLE_FAILED"), failedItems.map { it.status })
+            assertEquals(listOf("图片暂时无法读取"), failedItems.map { it.errorMessage })
         } finally {
             database.close()
         }

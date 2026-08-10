@@ -3,6 +3,8 @@ package com.frameyu.app.ui.analysis
 import com.frameyu.app.data.db.AnalysisBatchWithProgress
 import com.frameyu.app.data.db.AnalysisWorkItemEntity
 
+internal const val BATCH_FAILURE_DETAIL_LIMIT = 100
+
 data class BatchAnalysisActions(
     val canPause: Boolean = false,
     val canResume: Boolean = false,
@@ -21,6 +23,7 @@ data class BatchAnalysisUiState(
     val currentStageLabel: String,
     val progressFraction: Float,
     val failureItems: List<BatchFailureUiItem>,
+    val failureSummaryLabel: String?,
     val actions: BatchAnalysisActions,
 )
 
@@ -40,6 +43,9 @@ fun batchAnalysisUiState(
 ): BatchAnalysisUiState {
     val status = progress.batch.status
     val processed = progress.completedWorkItems + progress.failedWorkItems
+    val boundedFailureItems = failedItems
+        .take(BATCH_FAILURE_DETAIL_LIMIT)
+        .map(AnalysisWorkItemEntity::toFailureUiItem)
     val progressFraction = if (progress.totalWorkItems == 0L) {
         0f
     } else {
@@ -58,9 +64,20 @@ fun batchAnalysisUiState(
             batchStageLabel(currentStage)
         },
         progressFraction = progressFraction,
-        failureItems = failedItems.map(AnalysisWorkItemEntity::toFailureUiItem),
+        failureItems = boundedFailureItems,
+        failureSummaryLabel = failureSummaryLabel(
+            displayedCount = boundedFailureItems.size,
+            totalCount = progress.failedWorkItems,
+        ),
         actions = batchActions(status, progress.failedWorkItems),
     )
+}
+
+internal fun failureSummaryLabel(displayedCount: Int, totalCount: Long): String? = when {
+    displayedCount == 0 -> null
+    totalCount > displayedCount ->
+        "失败详情（仅展示前 $displayedCount 条 / 共 $totalCount 条）"
+    else -> "失败详情（共 $totalCount 条）"
 }
 
 internal fun canStartBatchAction(actionRunning: Boolean): Boolean = !actionRunning

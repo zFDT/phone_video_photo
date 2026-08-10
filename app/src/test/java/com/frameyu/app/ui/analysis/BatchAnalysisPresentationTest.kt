@@ -87,6 +87,77 @@ class BatchAnalysisPresentationTest {
         assertEquals("目标检测", state.failureItems.single().stageLabel)
         assertEquals("永久失败", state.failureItems.single().statusLabel)
         assertEquals("模型输出格式不支持", state.failureItems.single().message)
+        assertEquals("失败详情（共 1 条）", state.failureSummaryLabel)
+    }
+
+    @Test
+    fun `没有失败项时不展示失败详情摘要`() {
+        val state = batchAnalysisUiState(
+            batchId = 1L,
+            progress = progress(status = "COMPLETED", failed = 0L),
+            currentStage = null,
+            failedItems = emptyList(),
+        )
+
+        assertEquals(0L, state.failed)
+        assertTrue(state.failureItems.isEmpty())
+        assertEquals(null, state.failureSummaryLabel)
+    }
+
+    @Test
+    fun `少量失败项展示完整详情数量和总数`() {
+        val failedItems = (1L..3L).map { id ->
+            failedItem(
+                id = id,
+                mediaAssetId = id,
+                stage = "QUALITY",
+                status = "RETRYABLE_FAILED",
+                message = "失败 $id",
+            )
+        }
+
+        val state = batchAnalysisUiState(
+            batchId = 1L,
+            progress = progress(status = "NEEDS_ATTENTION", total = 3L, failed = 3L),
+            currentStage = null,
+            failedItems = failedItems,
+        )
+
+        assertEquals(3L, state.failed)
+        assertEquals(3, state.failureItems.size)
+        assertEquals("失败详情（共 3 条）", state.failureSummaryLabel)
+    }
+
+    @Test
+    fun `失败项超限时展示有界详情数量和完整失败总数`() {
+        val totalFailed = BATCH_FAILURE_DETAIL_LIMIT.toLong() + 23L
+        val failedItems = (1L..totalFailed).map { id ->
+            failedItem(
+                id = id,
+                mediaAssetId = id,
+                stage = "CLASSIFICATION",
+                status = "PERMANENT_FAILED",
+                message = "失败 $id",
+            )
+        }
+
+        val state = batchAnalysisUiState(
+            batchId = 1L,
+            progress = progress(
+                status = "NEEDS_ATTENTION",
+                total = totalFailed,
+                failed = totalFailed,
+            ),
+            currentStage = null,
+            failedItems = failedItems,
+        )
+
+        assertEquals(totalFailed, state.failed)
+        assertEquals(BATCH_FAILURE_DETAIL_LIMIT, state.failureItems.size)
+        assertEquals(
+            "失败详情（仅展示前 $BATCH_FAILURE_DETAIL_LIMIT 条 / 共 $totalFailed 条）",
+            state.failureSummaryLabel,
+        )
     }
 
     @Test

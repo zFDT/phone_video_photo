@@ -45,7 +45,10 @@ fun BatchAnalysisScreen(
         .collectAsState(initial = null)
     val currentStage by database.batchAnalysisDao().observeCurrentStage(batchId)
         .collectAsState(initial = null)
-    val failedItems by database.batchAnalysisDao().observeFailedItems(batchId)
+    val failedItems by database.batchAnalysisDao().observeFailedItems(
+        batchId = batchId,
+        limit = BATCH_FAILURE_DETAIL_LIMIT,
+    )
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var actionRunning by remember { mutableStateOf(false) }
@@ -110,11 +113,13 @@ fun BatchAnalysisScreen(
             )
             if (state.failureItems.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "失败详情（${state.failureItems.size}）",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                state.failureSummaryLabel?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
