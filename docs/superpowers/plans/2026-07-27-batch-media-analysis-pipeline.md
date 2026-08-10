@@ -26,8 +26,8 @@
 - 创建：`app/src/main/java/com/frameyu/app/analysis/batch/BatchStateMachine.kt`，集中管理合法状态转换。
 - 创建：`app/src/main/java/com/frameyu/app/data/db/BatchAnalysisEntities.kt`，定义批次、工作项和模型结果表。
 - 创建：`app/src/main/java/com/frameyu/app/data/db/BatchAnalysisDao.kt`，提供可恢复工作项查询和事务写入。
-- 修改：`app/src/main/java/com/frameyu/app/data/db/FrameYuDatabase.kt`，升级到版本 4。
-- 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`，注册 3→4 迁移。
+- 修改：`app/src/main/java/com/frameyu/app/data/db/FrameYuDatabase.kt`，批量结果表从版本 4 起接入，当前数据库版本为 7。
+- 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`，注册连续 Room 迁移至 v7。
 
 ### 模型分析
 
@@ -70,7 +70,7 @@
 - 修改：`app/src/main/java/com/frameyu/app/ui/organize/OrganizerScreen.kt`
 - 修改：`app/src/main/java/com/frameyu/app/MainActivity.kt`
 
-- [ ] **步骤 1：补充感知哈希稳定性测试**
+- [x] **步骤 1：补充感知哈希稳定性测试**
 
 ```kotlin
 class PerceptualHashTest {
@@ -90,7 +90,7 @@ class PerceptualHashTest {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认当前工作区实现状态**
+- [x] **步骤 2：运行测试确认当前工作区实现状态**
 
 运行：
 
@@ -100,7 +100,7 @@ class PerceptualHashTest {
 
 预期：新增测试在类或行为未完成时失败；不得跳过失败直接提交。
 
-- [ ] **步骤 3：完成相似扫描 UI 数据流**
+- [x] **步骤 3：完成相似扫描 UI 数据流**
 
 在 `OrganizerScreen` 增加：
 
@@ -126,7 +126,7 @@ val selectedGroups = displayGroups.filter { it.duplicateKey in selectedKeys }
 
 禁止继续使用元数据 `groups` 计算精确重复或相似扫描的删除 URI。
 
-- [ ] **步骤 4：实现受限解码的感知哈希读取器并接入 MainActivity**
+- [x] **步骤 4：实现受限解码的感知哈希读取器并接入 MainActivity**
 
 创建 `AndroidVisualHashReader`：
 
@@ -171,7 +171,7 @@ class AndroidVisualHashReader(
 
 `MainActivity` 使用 `AndroidVisualHashReader(contentResolver)` 创建 `SimilarMediaDuplicateDetector`。
 
-- [ ] **步骤 5：运行整理相关测试和编译**
+- [x] **步骤 5：运行整理相关测试和编译**
 
 运行：
 
@@ -181,7 +181,7 @@ class AndroidVisualHashReader(
 
 预期：PASS，且 Kotlin 编译成功。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/organize app/src/test/java/com/frameyu/app/organize app/src/main/java/com/frameyu/app/ui/organize/OrganizerScreen.kt app/src/main/java/com/frameyu/app/MainActivity.kt
@@ -198,7 +198,7 @@ git commit -m "feat(P1): 接入感知哈希相似扫描"
 - 创建：`app/src/main/java/com/frameyu/app/vision/model/ModelAssetVerifier.kt`
 - 创建：`app/src/test/java/com/frameyu/app/vision/model/ModelAssetCatalogTest.kt`
 
-- [ ] **步骤 1：编写清单解析和 SHA 校验测试**
+- [x] **步骤 1：编写清单解析和 SHA 校验测试**
 
 ```kotlin
 class ModelAssetCatalogTest {
@@ -232,7 +232,7 @@ class ModelAssetCatalogTest {
 }
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.vision.model.ModelAssetCatalogTest
@@ -240,7 +240,7 @@ class ModelAssetCatalogTest {
 
 预期：FAIL，缺少 `ModelAssetCatalog` 和 `ModelAssetVerifier`。
 
-- [ ] **步骤 3：实现纯 Kotlin 清单模型**
+- [x] **步骤 3：实现纯 Kotlin 清单模型**
 
 ```kotlin
 enum class ModelId { IMAGE_CLASSIFIER, OBJECT_DETECTOR, IMAGE_EMBEDDER }
@@ -276,7 +276,7 @@ class ModelAssetCatalog private constructor(val models: Map<ModelId, ModelDescri
 
 校验器使用 `MessageDigest.getInstance("SHA-256")` 分块读取，不一次性加载模型。
 
-- [ ] **步骤 4：创建模型清单和下载脚本**
+- [x] **步骤 4：创建模型清单和下载脚本**
 
 清单写入以下官方 URL 和固定 SHA：
 
@@ -304,7 +304,7 @@ param(
 
 每个文件先检查 `$SourceDirectory`，存在且 SHA 匹配则复制；否则使用 `Invoke-WebRequest` 下载到临时文件，校验后移动到输出目录。任何 SHA 不匹配时退出码必须非零。
 
-- [ ] **步骤 5：更新 .gitignore**
+- [x] **步骤 5：更新 .gitignore**
 
 ```gitignore
 /module/
@@ -313,7 +313,7 @@ param(
 
 保留 `model-manifest.properties` 可提交。
 
-- [ ] **步骤 6：运行脚本校验本地模型**
+- [x] **步骤 6：运行脚本校验本地模型**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/fetch-models.ps1 -SourceDirectory module
@@ -322,7 +322,7 @@ powershell -ExecutionPolicy Bypass -File scripts/fetch-models.ps1 -ValidateOnly
 
 预期：三个模型 SHA 全部匹配，输出文件存在；`git status` 不显示 `.tflite`。
 
-- [ ] **步骤 7：运行单元测试并 Commit**
+- [x] **步骤 7：运行单元测试并 Commit**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.vision.model.ModelAssetCatalogTest
@@ -337,7 +337,7 @@ git commit -m "build: 增加本地模型资产校验"
 - 创建：`app/src/main/java/com/frameyu/app/analysis/batch/BatchStateMachine.kt`
 - 创建：`app/src/test/java/com/frameyu/app/analysis/batch/BatchStateMachineTest.kt`
 
-- [ ] **步骤 1：编写状态转换失败测试**
+- [x] **步骤 1：编写状态转换失败测试**
 
 ```kotlin
 class BatchStateMachineTest {
@@ -358,7 +358,7 @@ class BatchStateMachineTest {
 }
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.analysis.batch.BatchStateMachineTest
@@ -366,7 +366,7 @@ class BatchStateMachineTest {
 
 预期：FAIL，缺少批次类型。
 
-- [ ] **步骤 3：实现状态和阶段**
+- [x] **步骤 3：实现状态和阶段**
 
 ```kotlin
 enum class AnalysisStage {
@@ -392,7 +392,7 @@ enum class WorkItemStatus {
 
 `BatchStateMachine` 只允许设计规格状态图中的转换。`analyzerVersion` 由阶段名、模型 SHA 和策略版本生成 SHA-256。
 
-- [ ] **步骤 4：运行测试并 Commit**
+- [x] **步骤 4：运行测试并 Commit**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.analysis.batch.BatchStateMachineTest
@@ -409,7 +409,7 @@ git commit -m "feat(P1): 定义批量分析状态机"
 - 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
 - 创建：`app/src/androidTest/java/com/frameyu/app/data/db/BatchAnalysisDaoTest.kt`
 
-- [ ] **步骤 1：编写 Room 工作项恢复测试**
+- [x] **步骤 1：编写 Room 工作项恢复测试**
 
 测试创建批次和两个工作项，把一个更新为 `COMPLETED`，验证 `nextRunnableItems(batchId)` 只返回 `PENDING` 与 `RETRYABLE_FAILED`。
 
@@ -418,7 +418,7 @@ val pending = dao.nextRunnableItems(batchId, limit = 10)
 assertEquals(listOf(pendingId, retryableId), pending.map { it.id })
 ```
 
-- [ ] **步骤 2：运行 AndroidTest 编译验证失败**
+- [x] **步骤 2：运行 AndroidTest 编译验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:compileDebugAndroidTestKotlin
@@ -426,7 +426,7 @@ assertEquals(listOf(pendingId, retryableId), pending.map { it.id })
 
 预期：FAIL，缺少实体和 DAO。
 
-- [ ] **步骤 3：实现实体**
+- [x] **步骤 3：实现实体**
 
 使用独立主键并建立唯一索引：
 
@@ -454,7 +454,7 @@ data class AnalysisWorkItemEntity(
 
 分类表每个 `(mediaId, timestamp, modelSha, rank)` 一行；检测表每个目标一行；特征引用表只保存路径和维度；质量表保存分项和算法版本。
 
-- [ ] **步骤 4：实现 DAO 事务边界**
+- [x] **步骤 4：实现 DAO 事务边界**
 
 DAO 必须提供：
 
@@ -468,7 +468,7 @@ suspend fun failItem(id: Long, retryable: Boolean, message: String, updatedAtMil
 fun observeBatch(batchId: Long): Flow<AnalysisBatchWithProgress>
 ```
 
-- [ ] **步骤 5：增加 MIGRATION_3_4**
+- [x] **步骤 5：增加 MIGRATION_3_4**
 
 `FrameYuDatabase` 升级到版本 4，迁移显式创建所有新表和索引。`FrameYuApplication` 注册：
 
@@ -480,7 +480,7 @@ fun observeBatch(batchId: Long): Flow<AnalysisBatchWithProgress>
 )
 ```
 
-- [ ] **步骤 6：运行数据库验证并 Commit**
+- [x] **步骤 6：运行数据库验证并 Commit**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
@@ -499,7 +499,7 @@ git commit -m "feat(P1): 持久化批量分析工作项"
 - 创建：`app/src/test/java/com/frameyu/app/vision/ObjectDetectionPolicyTest.kt`
 - 创建：`app/src/androidTest/java/com/frameyu/app/vision/BundledVisionModelsTest.kt`
 
-- [ ] **步骤 1：编写目标检测触发策略测试**
+- [x] **步骤 1：编写目标检测触发策略测试**
 
 ```kotlin
 class ObjectDetectionPolicyTest {
@@ -517,7 +517,7 @@ class ObjectDetectionPolicyTest {
 
 覆盖最高置信度 `< 0.45`、前两名差值 `< 0.10`、主体标签和高价值候选四个条件。
 
-- [ ] **步骤 2：运行策略测试验证失败**
+- [x] **步骤 2：运行策略测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.vision.ObjectDetectionPolicyTest
@@ -525,7 +525,7 @@ class ObjectDetectionPolicyTest {
 
 预期：FAIL。
 
-- [ ] **步骤 3：实现稳定结果模型和策略**
+- [x] **步骤 3：实现稳定结果模型和策略**
 
 ```kotlin
 data class LabelScore(val label: String, val score: Float, val index: Int = -1)
@@ -556,7 +556,7 @@ fun interface FrameModelResultStore {
 
 所有坐标归一化到 `0f..1f`，分析器不把 MediaPipe 类型泄漏给数据库和 UI。
 
-- [ ] **步骤 4：实现 MediaPipe 适配器**
+- [x] **步骤 4：实现 MediaPipe 适配器**
 
 分类器使用 `RunningMode.IMAGE` 处理图片和独立视频采样帧；视频时间关系由现有采样层维护。分类器选项：
 
@@ -570,11 +570,11 @@ ImageClassifier.ImageClassifierOptions.builder()
 
 目标检测器使用 `setMaxResults(10)` 和 `setScoreThreshold(0.30f)`。Embedder 保持 L2 归一化、float32 输出。
 
-- [ ] **步骤 5：编写 assets 模型仪器测试**
+- [x] **步骤 5：编写 assets 模型仪器测试**
 
 测试逐个打开模型、校验 SHA、初始化任务，并用 224×224 纯色 Bitmap 验证返回结构或明确的空结果，不要求具体标签。
 
-- [ ] **步骤 6：运行模型测试编译和 JVM 测试**
+- [x] **步骤 6：运行模型测试编译和 JVM 测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.vision.*' :app:compileDebugAndroidTestKotlin
@@ -582,7 +582,7 @@ ImageClassifier.ImageClassifierOptions.builder()
 
 预期：PASS。真机推理留到最终验收。
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/vision app/src/test/java/com/frameyu/app/vision app/src/androidTest/java/com/frameyu/app/vision
@@ -598,7 +598,7 @@ git commit -m "feat(P1): 接入本地图像分类和目标检测"
 - 创建：`app/src/test/java/com/frameyu/app/storage/FeatureCacheTest.kt`
 - 创建：`app/src/test/java/com/frameyu/app/analysis/ImageAnalysisCoordinatorTest.kt`
 
-- [ ] **步骤 1：编写原子向量缓存测试**
+- [x] **步骤 1：编写原子向量缓存测试**
 
 ```kotlin
 @Test
@@ -611,7 +611,7 @@ fun `向量写入后可以按模型和媒体读取`() {
 
 同时验证写入失败不留下最终文件，非法 SHA 和媒体 ID 被拒绝。
 
-- [ ] **步骤 2：运行缓存测试验证失败**
+- [x] **步骤 2：运行缓存测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.storage.FeatureCacheTest
@@ -619,7 +619,7 @@ fun `向量写入后可以按模型和媒体读取`() {
 
 预期：FAIL。
 
-- [ ] **步骤 3：实现 FeatureCache**
+- [x] **步骤 3：实现 FeatureCache**
 
 路径固定为：
 
@@ -629,11 +629,11 @@ files/features/<model-sha>/<media-id>.f32
 
 格式为 4 字节维度头加 little-endian float32。先写 `.tmp`，`File.renameTo` 成功后才返回最终路径。
 
-- [ ] **步骤 4：编写协调器阶段复用测试**
+- [x] **步骤 4：编写协调器阶段复用测试**
 
 注入假分类器、Embedder、质量分析器和 DAO，第一次执行全部阶段；第二次使用相同模型 SHA 时断言分类器和 Embedder 调用次数不增加。
 
-- [ ] **步骤 5：实现受限解码和协调器**
+- [x] **步骤 5：实现受限解码和协调器**
 
 `MediaImageDecoder.decode(uri, maxEdge = 1024)`：
 
@@ -645,13 +645,13 @@ files/features/<model-sha>/<media-id>.f32
 
 `ImageAnalysisCoordinator.analyze(workItem)` 每完成一个阶段立即事务提交，异常只失败当前工作项。
 
-- [ ] **步骤 6：运行测试和编译**
+- [x] **步骤 6：运行测试和编译**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.storage.FeatureCacheTest --tests com.frameyu.app.analysis.ImageAnalysisCoordinatorTest :app:compileDebugKotlin
 ```
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/storage app/src/main/java/com/frameyu/app/vision/MediaImageDecoder.kt app/src/main/java/com/frameyu/app/analysis/ImageAnalysisCoordinator.kt app/src/test/java/com/frameyu/app/storage app/src/test/java/com/frameyu/app/analysis
@@ -667,7 +667,7 @@ git commit -m "feat(P1): 实现图片模型分析协调器"
 - 创建：`app/src/test/java/com/frameyu/app/analysis/batch/BatchAnalysisRunnerTest.kt`
 - 创建：`app/src/test/java/com/frameyu/app/analysis/batch/BatchAnalysisSchedulerTest.kt`
 
-- [ ] **步骤 1：编写恢复和失败隔离测试**
+- [x] **步骤 1：编写恢复和失败隔离测试**
 
 使用内存假 DAO：
 
@@ -681,13 +681,13 @@ assertEquals(WorkItemStatus.RETRYABLE_FAILED, dao.item(failedId).status)
 
 第二次运行只重试失败项。
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.*'
 ```
 
-- [ ] **步骤 3：实现 Runner**
+- [x] **步骤 3：实现 Runner**
 
 Runner 每次最多获取固定数量工作项，逐项：
 
@@ -702,11 +702,11 @@ runCatching { coordinator.run(item) }
 
 协程取消必须重新抛出，不标记永久失败。
 
-- [ ] **步骤 4：实现 WorkManager Worker 和前台通知**
+- [x] **步骤 4：实现 WorkManager Worker 和前台通知**
 
 输入只携带 `batch_id`。进度 Data 包含完成、失败和总数。通知显示当前阶段和媒体数量，前台服务类型继续使用 `dataSync`。
 
-- [ ] **步骤 5：实现唯一批次串行调度**
+- [x] **步骤 5：实现唯一批次串行调度**
 
 ```kotlin
 private const val UNIQUE_BATCH_WORK = "frameyu-batch-analysis"
@@ -714,13 +714,13 @@ private const val UNIQUE_BATCH_WORK = "frameyu-batch-analysis"
 
 使用 `ExistingWorkPolicy.APPEND_OR_REPLACE`；提供 `enqueue(batchId)`、`pause(batchId)`、`resume(batchId)`、`cancel(batchId)` 和 `retryFailures(batchId)`。
 
-- [ ] **步骤 6：运行调度测试和构建**
+- [x] **步骤 6：运行调度测试和构建**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.*' :app:assembleDebug
 ```
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/analysis/batch app/src/test/java/com/frameyu/app/analysis/batch app/src/main/java/com/frameyu/app/FrameYuApplication.kt
@@ -736,7 +736,7 @@ git commit -m "feat(P1): 实现可恢复批量分析任务"
 - 修改：`app/src/main/java/com/frameyu/app/sampling/AnalysisCandidateMapper.kt`
 - 使用：`app/src/main/java/com/frameyu/app/vision/FrameModelAnalyzer.kt`
 
-- [ ] **步骤 1：编写视频标签聚合测试**
+- [x] **步骤 1：编写视频标签聚合测试**
 
 ```kotlin
 @Test
@@ -752,13 +752,13 @@ fun `偶发单帧标签不会覆盖持续标签`() {
 }
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoClassificationAggregatorTest
 ```
 
-- [ ] **步骤 3：实现聚合器**
+- [x] **步骤 3：实现聚合器**
 
 每个标签计算：
 
@@ -768,7 +768,7 @@ fun `偶发单帧标签不会覆盖持续标签`() {
 
 至少出现两帧或覆盖率达到 20% 才进入视频级标签；采样帧不足两帧时允许单帧结果。
 
-- [ ] **步骤 4：注入 FrameModelAnalyzer**
+- [x] **步骤 4：注入 FrameModelAnalyzer**
 
 在现有规则评分之后：
 
@@ -783,17 +783,17 @@ frameModelResultStore.saveFrameResult(media.id, timestampMillis, modelResult)
 
 目标检测由 `ObjectDetectionPolicy` 决定。每个成功帧保存模型结果后，再保存下一时间断点，避免断点越过未提交结果。
 
-- [ ] **步骤 5：保证模型失败不丢失规则候选**
+- [x] **步骤 5：保证模型失败不丢失规则候选**
 
 模型异常记录到帧结果错误字段；规则候选仍写入 `analysis_candidates`。模型全局初始化失败时该模型阶段标记可重试，不使视频规则分析失败。
 
-- [ ] **步骤 6：运行采样和模型测试**
+- [x] **步骤 6：运行采样和模型测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.sampling.*' --tests 'com.frameyu.app.vision.*' :app:assembleDebug
 ```
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/sampling app/src/test/java/com/frameyu/app/sampling
@@ -831,7 +831,7 @@ WorkData 与 tag 同时携带 taskId + generation。scheduler 按执行键查询
 
 - [x] **步骤 4：以 runner 测试驱动 generation CAS 与协作取消**
 
-runner 必须先以 taskId + generation CAS 执行 `QUEUED → RUNNING`，成功 claim 后才清理上一代候选帧并创建解码器。旧代际、终态或已被 claim 的节点返回 no-op；逐帧边界检查状态和 generation，协作取消在下一帧前停止并保留最后 checkpoint。checkpoint、`COMPLETED`、`FAILED`、`CANCELLED` 更新均受 generation 和状态约束，旧 runner 不得覆盖新代状态。
+runner 必须先按 taskId + generation 判断执行状态：同 generation 已为 `RUNNING` 的恢复 Worker 可以从 checkpoint 续跑；`QUEUED` 通过 CAS 转为 `RUNNING` 后再清理上一代候选帧并创建解码器。只有旧 generation 或终态节点返回 no-op。逐帧边界检查状态和 generation，协作取消在下一帧前停止并保留最后 checkpoint；checkpoint、`COMPLETED`、`FAILED`、`CANCELLED` 更新均受 generation 和状态约束，旧 runner 不得覆盖新代状态。
 
 - [x] **步骤 5：以 Worker 边界测试驱动共享链释放**
 
@@ -864,7 +864,7 @@ git diff --check
 - 修改：`app/src/main/java/com/frameyu/app/ui/organize/OrganizerScreen.kt`
 - 修改：`app/src/main/java/com/frameyu/app/MainActivity.kt`
 
-- [ ] **步骤 1：编写推荐置信等级测试**
+- [x] **步骤 1：编写推荐置信等级测试**
 
 ```kotlin
 @Test
@@ -878,13 +878,13 @@ fun `完全重复为高置信且低质量不会默认选中`() {
 }
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.organize.RecommendationEngineTest
 ```
 
-- [ ] **步骤 3：实现推荐规则**
+- [x] **步骤 3：实现推荐规则**
 
 ```kotlin
 enum class RecommendationConfidence { HIGH, MEDIUM, LOW }
@@ -901,30 +901,38 @@ data class OrganizationRecommendation(
 
 只有完全重复可默认选中待删除副本；相似和低质量默认不选。
 
-- [ ] **步骤 4：实现批次状态页面**
+- [x] **步骤 4：实现批次状态页面**
 
 页面观察 Room 批次进度，显示总数、完成、失败、当前阶段，并提供暂停、继续、取消和重试失败项。页面状态只持有 ID 和统计值，不持有 Bitmap。
 
-- [ ] **步骤 5：统一整理页面数据源**
+- [x] **步骤 5：统一整理页面数据源**
 
 筛选项包括完全重复、相似、低质量、截图、录屏和视频精彩候选。删除对话框必须根据当前可见且选中的推荐计算 URI。建议保留项默认锁定。
 
-- [ ] **步骤 6：接入 MainActivity 导航**
+- [x] **步骤 6：接入 MainActivity 导航**
 
 媒体库新增“批量深度分析”入口；批次完成后可进入整理页。现有候选帧导出页面保持不变。
 
-- [ ] **步骤 7：运行 UI 纯逻辑测试和构建**
+- [x] **步骤 7：运行 UI 纯逻辑测试和构建**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.organize.*' --tests 'com.frameyu.app.ui.*' :app:assembleDebug
 ```
 
-- [ ] **步骤 8：Commit**
+- [x] **步骤 8：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/organize app/src/test/java/com/frameyu/app/organize app/src/main/java/com/frameyu/app/ui app/src/main/java/com/frameyu/app/MainActivity.kt
 git commit -m "feat(P1): 增加批量分析和整理确认页面"
 ```
+
+实现记录（2026-08-11）：
+
+- 图片批次按 `QUALITY`、`CLASSIFICATION`、`EMBEDDING`、`CONDITIONAL_DETECTION` 四阶段执行；条件检测只在同批次、同媒体分类项 `COMPLETED` 后运行。
+- 分析器版本绑定模型 SHA-256 和策略；条件检测版本同时包含分类模型 SHA、检测模型 SHA 与检测策略。并发打开或创建兼容批次保持幂等，阶段矩阵或版本不兼容时退役旧批次并重建。
+- 批次支持暂停、继续、取消、失败重试和进程恢复，并由 WorkManager 唯一链串行调度。失败详情在 SQL 层固定 `LIMIT 100`，页面仍显示完整失败总数。
+- 统一整理页覆盖精确重复、相似媒体、低质量、截图、录屏和视频精彩候选；大重复组扁平化显示，视频候选使用 SQL 聚合。
+- 删除前复验 live MediaStore 元数据；精确重复额外复验完整组 SHA-256，并使用全局 `suggestedKeep` 锁。Android R+ 使用 `MediaStore.createTrashRequest()`，Q 处理 `RecoverableSecurityException`，P- 直接删除；每批最多 100 个 URI，支持 Activity 恢复、过期对账和 Room 部分同步。所有删除均须用户明确确认，绝不自动删除。
 
 ### 任务 10：文档、全量验证和真机交接点
 
@@ -932,7 +940,7 @@ git commit -m "feat(P1): 增加批量分析和整理确认页面"
 - 修改：`docs/mvp-foundation.md`
 - 修改：`docs/superpowers/plans/2026-07-27-batch-media-analysis-pipeline.md`
 
-- [ ] **步骤 1：运行模型脚本验证**
+- [x] **步骤 1：运行模型脚本验证**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/fetch-models.ps1 -ValidateOnly
@@ -940,18 +948,22 @@ powershell -ExecutionPolicy Bypass -File scripts/fetch-models.ps1 -ValidateOnly
 
 预期：三个模型 SHA 匹配。
 
-- [ ] **步骤 2：运行完整离线验证**
+验证记录（2026-08-11）：脚本退出码为 0；EfficientNet-Lite2 为 `94B6C84A5D6DE20F932558DE213B50E0338DCC06AB83D8D64B12128A476B4B83`，EfficientDet-Lite2 为 `AD2ABBF2B4E10585E15176FD7B5EF03C28DDA959AE26FC142549FDD1814DB91D`，MobileNetV3 Embedder 为 `0F786F8EB8BCECD1F9C5BC50F00A5E6B9F62600EDB503AD3BFFF5F51035B0EA5`。
+
+- [x] **步骤 2：运行完整离线验证**
 
 ```powershell
-$env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot'
+$env:JAVA_HOME='D:\Program Files\Android\Android Studio\jbr'
 $env:ANDROID_HOME='D:\flutter\sdk\android'
 $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
-./gradlew.bat --offline :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin
+./gradlew.bat --offline --no-daemon '-Dkotlin.compiler.execution.strategy=in-process' :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin --rerun-tasks
 ```
 
 预期：`BUILD SUCCESSFUL`。
 
-- [ ] **步骤 3：检查版本控制状态**
+验证记录（2026-08-11）：使用 Android Studio JBR OpenJDK 21.0.8，项目 Kotlin/JVM target 保持 17。命令返回 `BUILD SUCCESSFUL`；66 个测试套件、433 个 JVM 测试全部通过，0 failure、0 error、0 skipped；`:app:assembleDebug` 与 `:app:compileDebugAndroidTestKotlin` 通过。
+
+- [x] **步骤 3：检查版本控制状态**
 
 ```powershell
 git diff --check
@@ -960,7 +972,9 @@ git status --short
 
 预期：只有本任务文档修改；模型二进制和 `module/` 不出现。
 
-- [ ] **步骤 4：更新里程碑文档**
+版本控制记录：`.gitignore` 已忽略 `module/`、生成的模型 assets 和 `*/build/`，模型源缓存与 APK 均不提交。Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小 191,500,208 字节，SHA-256 为 `5898EA4A9738221162C7B43457427A853184795B46D10A0553B8A388F7C3CDA9`。
+
+- [x] **步骤 4：更新里程碑文档**
 
 记录：
 
@@ -970,7 +984,7 @@ git status --short
 - 已运行的测试命令。
 - 尚未执行的 Redmi K70 Pro 性能、温控和动态照片验证。
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```powershell
 git add docs/mvp-foundation.md docs/superpowers/plans/2026-07-27-batch-media-analysis-pipeline.md
@@ -979,4 +993,4 @@ git commit -m "docs: 更新批量模型分析里程碑"
 
 - [ ] **步骤 6：请求真机接入**
 
-只有上述离线验证全部通过后，才请用户连接 Redmi K70 Pro。真机阶段运行模型 assets 仪器测试、1 万级媒体恢复测试、演唱会长视频温控测试和 HyperOS 动态照片验证。
+只有上述离线验证全部通过后，才请用户连接 Redmi K70 Pro。尚未执行的真机阶段包括：模型 assets instrumentation、1 万级媒体批量分析与中断恢复、演唱会长视频性能/温控/取消、Android R+ 系统回收站授权与 Activity 重建，以及 HyperOS 动态照片兼容性。

@@ -8,18 +8,18 @@
 
 - 原生 Kotlin + Jetpack Compose Android 项目骨架。
 - 目标设备：Redmi K70 Pro（ALSC，1 TB）。
-- 本地媒体分析方向：规则评分、ML Kit、MediaPipe Image Embedder、可插拔 LiteRT 模型。
-- 任务 2 的领域模型和 Room 数据层基础文件。
+- 本地媒体分析方向：规则评分、ML Kit、MediaPipe Tasks Vision 与可插拔 LiteRT 模型。
+- 已建立领域模型和 Room v7 数据层，覆盖媒体索引、视频任务、批次工作项、候选帧、分类、检测、向量引用和质量结果。
 - 已包含 MediaStore 媒体索引 MVP、权限入口、Photo Picker 入口和 Room 索引持久化；视频分析、候选帧导出和相册整理基础流程已接通。
 - 已完成首版精彩帧规则分析接口：支持清晰度、曝光、黑帧、重复帧和场景变化评分，后续可替换为 ML Kit/LiteRT 实现。
-- 已完成 ML Kit 人脸分析第一阶段，以及图像标签/向量适配层：本地模型状态、Bitmap/Image 输入、人脸特征、缩略图约束、标签映射和 MediaPipe Embedder 调用均已具备；MediaPipe `.task` 模型资产和统一分析管线仍待后续配置与实现。
-- 已完成统一分析管线：规则评分与三类视觉后端异步组合，区分未配置、未就绪、成功空结果和失败，单模型失败不会丢失其他结果。
+- 已接入 ML Kit 人脸分析和 MediaPipe 分类、向量、条件目标检测适配层：本地模型状态、Bitmap/Image 输入、人脸特征、受限解码、标签映射、模型 SHA 校验和结果持久化均已具备。
+- 已完成统一分析管线：图片按 `QUALITY`、`CLASSIFICATION`、`EMBEDDING`、`CONDITIONAL_DETECTION` 四阶段执行；条件检测只在同批次、同媒体的分类阶段 `COMPLETED` 后运行。单模型失败不会丢失其他阶段结果。
 - 已完成视频自适应采样计划：三档采样密度、最长 2 小时、半开区间覆盖、断点恢复；演唱会模式已将粗采样从 1 帧/秒提升到 2 帧/秒，并通过设置持久化读取。
-- 已完成视频帧采样器第一阶段：支持 MediaItem/Uri 输入、按计划读取帧、去重、取消和失败状态；音频分析与长任务调度仍待实现。
-- 已完成音频摘要特征分析第一阶段：根据能量、频谱变化和节奏变化生成并合并重点区间，不保存音频副本；实际音轨读取仍待接入。
-- 已完成可恢复视频分析任务核心：按采样区间逐帧回调，逐帧保存下一时间点、区间索引和累计进度；任务核心不持有 Bitmap、解码器或音频副本，可供 WorkManager 调度层接入。
-- 已完成分析断点的 Room 持久化适配：分析任务表升级到 v2，保存计划 ID、区间索引、下一时间点和累计帧数；已补充 1→2 迁移及内存数据库 instrumentation 测试。
-- 已完成 WorkManager 前台任务与串行调度：使用唯一工作链串行排队视频任务，前台通知实时报告任务进度，支持取消、失败和批量入队；默认执行器从 Room 读取视频，使用 `MediaMetadataRetriever` 解码、规则评分并保存候选帧。
+- 已完成视频帧采样器：支持 MediaItem/Uri 输入、按计划读取帧、去重、取消和失败隔离，并将规则评分、分类、向量和条件检测结果聚合为视频标签与精彩候选。
+- 音频摘要特征仍是独立的规则基础能力；实际音轨读取不属于本次批量图片/视频模型管线里程碑，也不阻塞现有视频帧分析。
+- 已完成可恢复视频分析任务：逐帧保存下一时间点、区间索引和累计进度；同 generation 的 `RUNNING` 恢复 Worker 可从 checkpoint 续跑，旧 generation 或终态 Worker 才会 no-op。
+- 已完成 Room v7 断点和执行代际持久化：视频任务、批次任务的状态与 checkpoint 均可在进程重建后恢复，旧执行代不能覆盖新状态。
+- 已完成 WorkManager 前台任务与串行调度：视频和批次任务使用唯一串行工作链，支持批量入队、暂停、继续、取消、失败重试和进程恢复；并发创建兼容批次保持幂等，不兼容分析器版本会退役旧批次并重建。
 - 已接通扫描后的第一条用户流程：媒体库页面从 Room 展示视频列表，支持单个视频开始分析、重复任务保护和排队/运行/完成/失败状态显示。
 - 已接通候选帧浏览第一阶段：分析完成后可进入候选列表，按评分排序，从原视频时间点加载缩略预览并显示评分明细。
 - 已接通候选帧人工选择第一阶段：支持按评分/时间排序，并将选择状态持久化到 Room，后续导出可直接使用已选候选。
@@ -37,12 +37,22 @@
 - 已接入候选帧详情第一阶段：支持从候选网格进入详情，按时间轴拖动定位，并以 30 FPS 进行上一帧/下一帧定位；导出流程开始复制可用的拍摄时间、宽高和旋转元数据，缺失 GPS 不会伪造。
 - 已补齐候选帧封面帧持久化：数据库升级到 v3，按视频原子地维护唯一封面帧，详情页支持将当前候选设为封面；批量分析页显示完成/排队/运行汇总，并支持取消当前串行分析链后重试。
 - WorkManager 调度器支持按任务取消、状态查询和恢复排队；由于 WorkManager 2.11 的 `WorkInfo` 不暴露输入数据，任务 ID 同步写入请求 Tag 用于本地状态关联。
-- 已建立相册整理规则基础：截图/录屏可按文件名和路径元数据确定性识别，票据/证件/条码/停车位保留视觉模型扩展入口；重复候选生成长度编码键，避免路径分隔符碰撞。
-- 已接入相册整理页：展示重复组和建议保留项，删除必须由用户明确确认；Android 10+ 移入系统回收区，旧系统才使用显式删除。
-- 已增加分块 SHA-256 完全重复检测 API 和相册整理页主动扫描入口：按内容哈希分组，长视频按 1 MB 分块读取，读取失败单独报告，不会把读取失败误判为重复。
-- 已增加基于 MediaPipe 向量的相似媒体分组基础：按余弦相似度和 24 小时时间窗口生成候选组，保留组内最高相似度；删除仍需用户明确确认。
+- 已建立统一相册整理页，覆盖精确重复、相似媒体、低质量、截图、录屏和视频精彩候选；大重复组按扁平 `LazyColumn` 展示，视频候选由 SQL 聚合，避免一次加载全部候选行。
+- 删除永远需要用户明确确认，绝不自动删除。删除前会复验 live MediaStore 元数据；精确重复还会复验完整组 SHA-256，并通过全局 `suggestedKeep` 锁阻止跨组、跨筛选误删。
+- Android R+ 使用 `MediaStore.createTrashRequest()` 系统授权，Android Q 处理 `RecoverableSecurityException`，Android P- 才直接删除；每批最多 100 个 URI，支持 Activity 恢复、授权过期对账和部分成功后的 Room 同步。
+- 已增加可取消的分块 SHA-256 完全重复检测和基于 MediaPipe 向量的相似媒体分组；长视频按 1 MB 分块检查取消，读取失败单独报告，不会误判为重复。
 - 已增加 50～200 GB 缓存容量策略和分析温控决策：通过 Android `PowerManager` 读取设备热状态，中高温度等待降温，临界温度将当前分析转为可恢复取消；缓存清理只生成计划不隐式删除。
 - 已接入设置持久化和设置页：缓存上限、演唱会模式、位置元数据复制、后台分析四项配置通过 SharedPreferences 保存。
+- 批次页面显示完整进度和失败总数，并提供暂停、继续、取消和失败重试；失败详情在 SQL 层固定 `LIMIT 100`，超限时明确显示“前 100 条 / 总数”。
+- 分析器版本包含对应模型 SHA-256 和检测策略；`CONDITIONAL_DETECTION` 版本同时绑定分类模型、检测模型和策略，防止模型或策略变化后错误复用旧结果。
+
+## 批量模型资产
+
+2026-08-11 运行 `scripts/fetch-models.ps1 -ValidateOnly` 成功，三项本地 assets 与 manifest 完全匹配：
+
+- EfficientNet-Lite2（分类）：`94B6C84A5D6DE20F932558DE213B50E0338DCC06AB83D8D64B12128A476B4B83`。
+- EfficientDet-Lite2（条件目标检测）：`AD2ABBF2B4E10585E15176FD7B5EF03C28DDA959AE26FC142549FDD1814DB91D`。
+- MobileNetV3 Small 0.75 224 Embedder（图像向量）：`0F786F8EB8BCECD1F9C5BC50F00A5E6B9F62600EDB503AD3BFFF5F51035B0EA5`。
 
 ## 版本控制约定
 
@@ -50,20 +60,34 @@
 - 推荐分支：`mvp-foundation`。
 - 后续功能按独立任务提交，提交前运行对应的单元测试或静态检查。
 - 不提交原始照片、视频、分析缓存、Android Studio 本地配置、签名文件和任何 Token。
+- `module/`、模型源缓存、生成的 `.tflite` 和 APK 均不提交；现有 `.gitignore` 已覆盖这些路径，无需调整。
 - 推送 GitHub 前先创建私有仓库，再配置远程地址；远程地址和凭据不写入项目文件。
 
-## 当前验证限制
+## 当前验证与限制
 
-本机存在 Android SDK 和 Java 17：
+本机验证环境：
 
 - Android SDK：`D:\flutter\sdk\android`。
 - 已安装 SDK Platform：`android-31`、`android-33`、`android-34`、`android-35`、`android-36`。
 - 已安装 Build Tools：`35.0.0`、`35.0.1`、`36.0.0`。
-- Java：Eclipse Temurin 17.0.19。
+- Java：Android Studio JBR OpenJDK 21.0.8（`D:\Program Files\Android\Android Studio\jbr`）；项目 Kotlin/JVM target 仍为 17。
 
 当前项目已接入 Gradle 8.13 Wrapper，并补齐 Room + KSP、WorkManager、Media3、ML Kit、MediaPipe、ExifInterface 等依赖。Gradle 8.13 distribution 已存在于本机缓存；项目同时配置了 Maven Central、Google Maven 和阿里云公共镜像。
 
-验证结果：`:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已在离线模式下成功通过。当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
+2026-08-11 使用以下命令执行完整离线验证：
+
+```powershell
+$env:JAVA_HOME='D:\Program Files\Android\Android Studio\jbr'
+$env:ANDROID_HOME='D:\flutter\sdk\android'
+$env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
+./gradlew.bat --offline --no-daemon '-Dkotlin.compiler.execution.strategy=in-process' :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin --rerun-tasks
+```
+
+结果为 `BUILD SUCCESSFUL`：66 个测试套件、433 个 JVM 测试，0 failure、0 error、0 skipped；`:app:assembleDebug` 与 `:app:compileDebugAndroidTestKotlin` 均通过。`git diff --check` 通过，提交前工作树范围检查仅包含本任务两份文档。
+
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,500,208 字节，SHA-256 为 `5898EA4A9738221162C7B43457427A853184795B46D10A0553B8A388F7C3CDA9`；该生成物不提交。
+
+当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
 最近验证：`./gradlew.bat --offline :app:testDebugUnitTest --tests com.frameyu.app.sampling.VideoAnalysisTaskTest` 已成功通过，覆盖完整区间、断点续采和回调失败进度保留。
 
@@ -75,13 +99,15 @@
 
 扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；修复后重新安装并点击全量扫描，设备显示扫描完成并更新 `10097` 个媒体。
 
-首个验证命令为：
+本次批量模型管线尚未执行以下 Redmi K70 Pro 真机验收：
 
-```powershell
-./gradlew :app:assembleDebug :app:testDebugUnitTest
-```
+- 模型 assets instrumentation 初始化与推理。
+- 1 万级媒体批量分析、中断恢复和失败重试。
+- 演唱会长视频的性能、温控、取消与断点恢复。
+- Android R+ 系统回收站授权及 Activity 重建对账。
+- HyperOS 动态照片兼容性。
 
-连接 Redmi K70 Pro 后再执行：
+连接设备后执行基础 instrumentation：
 
 ```powershell
 ./gradlew :app:connectedDebugAndroidTest
@@ -89,11 +115,12 @@
 
 多设备协作时应保留项目内的 `gradlew`、`gradlew.bat` 和 `gradle/wrapper`，不要提交 `local.properties`、`.gradle` 缓存或本地媒体文件。
 
-## 已提交记录
+## 关键提交记录
 
 - `31770f2 chore: initialize mvp foundation`：规格、计划、项目骨架、基础 Room 数据层和版本控制配置。
 - `bf3f84b feat: add media domain and room data layer`：应用模块配置和领域模型测试。
 - `94d48cd feat: 添加媒体扫描和访问功能，支持媒体索引和权限管理`：MediaStore 扫描、增量索引状态和 URI 访问封装。
-- 任务 3 的 UI、增量边界修复和 AndroidTest 已通过上述验证，待本阶段提交后补充 commit 记录。
-- 任务 4 的纯 Kotlin 评分器和单元测试已通过 `:app:testDebugUnitTest :app:assembleDebug`，尚未接入真实视觉模型。
-- 任务 5 第一阶段已通过 `:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin`；真实设备上的 ML Kit 运行验证待连接 Redmi K70 Pro。
+- `415e78c` 之前的阶段提交：完成模型资产、批次持久化、图片四阶段分析、视频模型聚合和 WorkManager 串行恢复基础。
+- `75b9a6c fix(P0): 加固批次版本与阶段依赖`：补齐并发幂等、四阶段版本矩阵和分类到条件检测依赖。
+- `542dfb9 feat(P1): 增加批量分析和整理确认页面` 及后续任务 9 修复：接入批次页面、统一整理、失败详情限流和安全删除授权。
+- `e1a59ed fix(P0): 终结重复扫描流与授权过期锁`：完成可取消散列和授权过期对账的最终质量门禁。
