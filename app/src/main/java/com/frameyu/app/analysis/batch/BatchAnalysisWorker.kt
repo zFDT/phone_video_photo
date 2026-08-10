@@ -133,6 +133,8 @@ interface BatchAnalysisStore : BatchAnalysisLifecycleStore {
 
     suspend fun markRunning(itemId: Long): Boolean
 
+    suspend fun dependenciesCompleted(item: AnalysisWorkItemEntity): Boolean
+
     suspend fun completeItem(itemId: Long): Boolean
 
     suspend fun failItem(itemId: Long, retryable: Boolean, message: String): Boolean
@@ -192,6 +194,10 @@ class RoomBatchAnalysisStore(
 
     override suspend fun markRunning(itemId: Long): Boolean =
         dao.markRunning(itemId, nowMillis())
+
+    override suspend fun dependenciesCompleted(item: AnalysisWorkItemEntity): Boolean =
+        item.stage != AnalysisStage.CONDITIONAL_DETECTION.name ||
+            dao.classificationCompleted(item.batchId, item.mediaAssetId)
 
     override suspend fun completeItem(itemId: Long): Boolean =
         dao.completeItem(itemId, nowMillis())
@@ -378,6 +384,19 @@ class BatchAnalysisRunner(
                     )
                 }
                 localSnapshot = localSnapshot.afterMarkRunning(item)
+                if (!store.dependenciesCompleted(item)) {
+                    if (!store.failItem(item.id, retryable = true, DEPENDENCY_FAILURE_MESSAGE)) {
+                        return resultAfterRejectedTransition(
+                            batchId,
+                            executionGeneration,
+                            currentStage = currentStage,
+                            currentMediaId = currentMediaId,
+                        )
+                    }
+                    localSnapshot = localSnapshot.afterFailure(retryable = true)
+                    onProgress(localSnapshot.toProgress(item))
+                    continue
+                }
                 val itemCoordinator = coordinator
                     ?: coordinatorProvider().also { coordinator = it }
 
@@ -568,6 +587,7 @@ class BatchAnalysisRunner(
 
     private companion object {
         const val DEFAULT_PAGE_SIZE = 32
+        const val DEPENDENCY_FAILURE_MESSAGE = "条件检测的当前批次分类依赖未完成"
     }
 }
 

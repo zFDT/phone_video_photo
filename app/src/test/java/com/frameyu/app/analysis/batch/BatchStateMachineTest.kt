@@ -185,6 +185,61 @@ class BatchStateMachineTest {
     }
 
     @Test
+    fun `条件检测版本对分类模型检测模型和检测策略都敏感`() {
+        val classificationSha = "A".repeat(64)
+        val detectionSha = "B".repeat(64)
+        val baseline = AnalyzerVersion.createConditionalDetection(
+            classificationModelSha256 = classificationSha,
+            detectionModelSha256 = detectionSha,
+            detectionPolicyVersion = "detection-policy-v1",
+        )
+
+        assertNotEquals(
+            baseline,
+            AnalyzerVersion.createConditionalDetection(
+                classificationModelSha256 = "C".repeat(64),
+                detectionModelSha256 = detectionSha,
+                detectionPolicyVersion = "detection-policy-v1",
+            ),
+        )
+        assertNotEquals(
+            baseline,
+            AnalyzerVersion.createConditionalDetection(
+                classificationModelSha256 = classificationSha,
+                detectionModelSha256 = "D".repeat(64),
+                detectionPolicyVersion = "detection-policy-v1",
+            ),
+        )
+        assertNotEquals(
+            baseline,
+            AnalyzerVersion.createConditionalDetection(
+                classificationModelSha256 = classificationSha,
+                detectionModelSha256 = detectionSha,
+                detectionPolicyVersion = "detection-policy-v2",
+            ),
+        )
+    }
+
+    @Test
+    fun `条件检测版本稳定归一化两个模型摘要`() {
+        val classificationSha = "abcdef0123456789".repeat(4)
+        val detectionSha = "0123456789abcdef".repeat(4)
+
+        assertEquals(
+            AnalyzerVersion.createConditionalDetection(
+                classificationModelSha256 = classificationSha,
+                detectionModelSha256 = detectionSha,
+                detectionPolicyVersion = " detection-policy-v1 ",
+            ),
+            AnalyzerVersion.createConditionalDetection(
+                classificationModelSha256 = classificationSha.uppercase(),
+                detectionModelSha256 = detectionSha.uppercase(),
+                detectionPolicyVersion = "detection-policy-v1",
+            ),
+        )
+    }
+
+    @Test
     fun `非法模型摘要被拒绝`() {
         listOf(
             "",

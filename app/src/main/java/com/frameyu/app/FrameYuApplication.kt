@@ -97,10 +97,10 @@ class FrameYuApplication : Application(), Configuration.Provider {
                     modelSha256 = embedderModel.sha256,
                     policyVersion = "image-embedding-v1",
                 ),
-                AnalysisStage.CONDITIONAL_DETECTION to AnalyzerVersion.create(
-                    AnalysisStage.CONDITIONAL_DETECTION,
-                    modelSha256 = detectorModel.sha256,
-                    policyVersion = "image-detection-policy-v1",
+                AnalysisStage.CONDITIONAL_DETECTION to AnalyzerVersion.createConditionalDetection(
+                    classificationModelSha256 = classifierModel.sha256,
+                    detectionModelSha256 = detectorModel.sha256,
+                    detectionPolicyVersion = "image-detection-policy-v1",
                 ),
             ),
         )

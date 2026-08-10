@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.frameyu.app.analysis.batch.RoomBatchAnalysisCreationStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -16,6 +17,128 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class BatchAnalysisDaoTest {
+    @Test
+    fun roomCreationStoreReadsEveryOpenBatchWorkItemField() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch().copy(status = "PAUSED"),
+                items = listOf(
+                    workItem(1L, 1L, "QUALITY", status = "COMPLETED").copy(
+                        analyzerVersion = "quality-current",
+                    ),
+                    workItem(2L, 1L, "CLASSIFICATION", status = "RETRYABLE_FAILED").copy(
+                        analyzerVersion = "classification-old",
+                    ),
+                ),
+            )
+            val store = RoomBatchAnalysisCreationStore(database.mediaAssetDao(), dao)
+
+            val items = store.openBatchItems(batchId)
+
+            assertEquals(listOf("QUALITY", "CLASSIFICATION"), items.map { it.stage })
+            assertEquals(
+                listOf("quality-current", "classification-old"),
+                items.map { it.analyzerVersion },
+            )
+            assertEquals(listOf("COMPLETED", "RETRYABLE_FAILED"), items.map { it.status })
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun replaceOpenBatchAtomicallyRetiresOldBatchAndKeepsCompletedResults() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L)))
+            val dao = database.batchAnalysisDao()
+            val oldBatchId = dao.createBatch(
+                batch = batch().copy(status = "NEEDS_ATTENTION"),
+                items = listOf(
+                    workItem(1L, 1L, "QUALITY", status = "COMPLETED"),
+                    workItem(2L, 1L, "CLASSIFICATION", status = "RETRYABLE_FAILED"),
+                ),
+            )
+
+            val newBatchId = dao.replaceOpenBatch(
+                openBatchId = oldBatchId,
+                batch = batch().copy(createdAtMillis = 10L, updatedAtMillis = 10L),
+                items = listOf(workItem(0L, 1L, "QUALITY")),
+                updatedAtMillis = 10L,
+            )
+
+            assertEquals("CANCELLED", dao.batchStatus(oldBatchId))
+            assertEquals(
+                listOf("COMPLETED", "CANCELLED"),
+                dao.batchWorkItems(oldBatchId).map { it.status },
+            )
+            assertEquals(newBatchId, dao.latestOpenBatch()?.id)
+            assertEquals(listOf("PENDING"), dao.batchWorkItems(newBatchId).map { it.status })
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun classificationDependencyRequiresCompletedItemInSameBatchAndMedia() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            dao.createBatch(
+                batch = batch().copy(status = "COMPLETED"),
+                items = listOf(workItem(1L, 1L, "CLASSIFICATION", status = "COMPLETED")),
+            )
+            val currentBatchId = dao.createBatch(
+                batch = batch(),
+                items = listOf(
+                    workItem(2L, 1L, "CLASSIFICATION"),
+                    workItem(3L, 1L, "CONDITIONAL_DETECTION"),
+                    workItem(4L, 2L, "CLASSIFICATION", status = "COMPLETED"),
+                ),
+            )
+
+            assertFalse(dao.classificationCompleted(currentBatchId, mediaAssetId = 1L))
+            assertTrue(dao.markRunning(2L, updatedAtMillis = 2L))
+            assertTrue(dao.completeItem(2L, updatedAtMillis = 3L))
+            assertTrue(dao.classificationCompleted(currentBatchId, mediaAssetId = 1L))
+            assertTrue(dao.classificationCompleted(currentBatchId, mediaAssetId = 2L))
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
+    fun currentStageOnlyReportsActiveWorkItems() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val dao = database.batchAnalysisDao()
+            val attentionBatchId = dao.createBatch(
+                batch = batch().copy(status = "NEEDS_ATTENTION"),
+                items = listOf(
+                    workItem(1L, 1L, "QUALITY", status = "RETRYABLE_FAILED"),
+                    workItem(2L, 2L, "CLASSIFICATION", status = "PERMANENT_FAILED"),
+                ),
+            )
+            val activeBatchId = dao.createBatch(
+                batch = batch().copy(status = "PAUSED"),
+                items = listOf(
+                    workItem(3L, 1L, "QUALITY", status = "PENDING"),
+                    workItem(4L, 2L, "CLASSIFICATION", status = "PAUSED"),
+                ),
+            )
+
+            assertEquals(null, dao.observeCurrentStage(attentionBatchId).first())
+            assertEquals("CLASSIFICATION", dao.observeCurrentStage(activeBatchId).first())
+        } finally {
+            database.close()
+        }
+    }
+
     @Test
     fun workItemUsesPlannedDefaults() {
         val item = workItem(id = 10L, mediaAssetId = 1L, stage = "QUALITY")

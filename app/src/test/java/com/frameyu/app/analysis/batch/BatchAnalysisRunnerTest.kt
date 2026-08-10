@@ -99,6 +99,69 @@ class BatchAnalysisRunnerTest {
     }
 
     @Test
+    fun `条件检测依赖未完成时不调用模型并记为可重试失败`() = runBlocking {
+        val conditional = item(2L, WorkItemStatus.PENDING).copy(
+            mediaAssetId = 1L,
+            stage = AnalysisStage.CONDITIONAL_DETECTION.name,
+        )
+        val store = FakeBatchAnalysisStore(listOf(conditional))
+        val analyzed = mutableListOf<Long>()
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { analyzed += it.id },
+        )
+
+        val result = runner.run(BATCH_ID)
+
+        assertTrue(analyzed.isEmpty())
+        assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(conditional.id))
+        assertTrue(store.errorMessage(conditional.id).orEmpty().contains("分类依赖未完成"))
+        assertEquals(1, result.retryableFailed)
+    }
+
+    @Test
+    fun `分类失败后条件检测也失败且显式重试按依赖顺序修正结果`() = runBlocking {
+        val classification = item(1L, WorkItemStatus.PENDING).copy(
+            mediaAssetId = 9L,
+            stage = AnalysisStage.CLASSIFICATION.name,
+        )
+        val conditional = item(2L, WorkItemStatus.PENDING).copy(
+            mediaAssetId = 9L,
+            stage = AnalysisStage.CONDITIONAL_DETECTION.name,
+        )
+        val store = FakeBatchAnalysisStore(listOf(classification, conditional))
+        val analyzed = mutableListOf<Long>()
+        var classificationAttempts = 0
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { item ->
+                analyzed += item.id
+                if (item.stage == AnalysisStage.CLASSIFICATION.name) {
+                    classificationAttempts += 1
+                    if (classificationAttempts == 1) error("分类模型失败")
+                }
+            },
+            pageSize = 1,
+        )
+
+        val first = runner.run(BATCH_ID)
+
+        assertEquals(listOf(1L), analyzed)
+        assertEquals(2, first.failed)
+        assertEquals(WorkItemStatus.PERMANENT_FAILED, store.status(classification.id))
+        assertEquals(WorkItemStatus.RETRYABLE_FAILED, store.status(conditional.id))
+
+        store.retryFailures(BATCH_ID)
+        val retried = runner.run(BATCH_ID)
+
+        assertEquals(listOf(1L, 1L, 2L), analyzed)
+        assertEquals(2, retried.completed)
+        assertEquals(0, retried.failed)
+        assertEquals(WorkItemStatus.COMPLETED, store.status(classification.id))
+        assertEquals(WorkItemStatus.COMPLETED, store.status(conditional.id))
+    }
+
+    @Test
     fun `协程取消原样传播且不标记失败`() = runBlocking {
         val store = FakeBatchAnalysisStore(items(1L))
         val cancellation = CancellationException("用户取消")
@@ -864,6 +927,8 @@ private class FakeBatchAnalysisStore(
 
     fun status(id: Long): WorkItemStatus = WorkItemStatus.valueOf(items.getValue(id).status)
 
+    fun errorMessage(id: Long): String? = items.getValue(id).errorMessage
+
     fun forceItemStatus(id: Long, status: WorkItemStatus) {
         items[id] = items.getValue(id).copy(status = status.name)
     }
@@ -947,6 +1012,16 @@ private class FakeBatchAnalysisStore(
             attempts = item.attempts + 1,
         )
         return true
+    }
+
+    override suspend fun dependenciesCompleted(item: AnalysisWorkItemEntity): Boolean {
+        if (item.stage != AnalysisStage.CONDITIONAL_DETECTION.name) return true
+        return items.values.any { dependency ->
+            dependency.batchId == item.batchId &&
+                dependency.mediaAssetId == item.mediaAssetId &&
+                dependency.stage == AnalysisStage.CLASSIFICATION.name &&
+                dependency.status == WorkItemStatus.COMPLETED.name
+        }
     }
 
     override suspend fun completeItem(itemId: Long): Boolean {

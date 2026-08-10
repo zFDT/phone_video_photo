@@ -45,6 +45,26 @@ abstract class BatchAnalysisDao {
     )
     abstract suspend fun latestOpenBatch(): AnalysisBatchEntity?
 
+    @Query(
+        """
+        SELECT * FROM analysis_work_items
+        WHERE batch_id = :batchId
+        ORDER BY id
+        """
+    )
+    abstract suspend fun batchWorkItems(batchId: Long): List<AnalysisWorkItemEntity>
+
+    @Transaction
+    open suspend fun replaceOpenBatch(
+        openBatchId: Long,
+        batch: AnalysisBatchEntity,
+        items: List<AnalysisWorkItemEntity>,
+        updatedAtMillis: Long,
+    ): Long {
+        cancelBatch(openBatchId, updatedAtMillis)
+        return createBatch(batch, items)
+    }
+
     suspend fun nextRunnableItems(batchId: Long, limit: Int): List<AnalysisWorkItemEntity> =
         nextRunnableItems(batchId, afterId = 0L, limit = limit)
 
@@ -73,6 +93,22 @@ abstract class BatchAnalysisDao {
         afterId: Long,
         limit: Int,
     ): List<AnalysisWorkItemEntity>
+
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM analysis_work_items
+            WHERE batch_id = :batchId
+              AND media_asset_id = :mediaAssetId
+              AND stage = 'CLASSIFICATION'
+              AND status = 'COMPLETED'
+        )
+        """
+    )
+    abstract suspend fun classificationCompleted(
+        batchId: Long,
+        mediaAssetId: Long,
+    ): Boolean
 
     /** 工作项不存在时抛错；存在但来源状态已变化时返回 false。 */
     @Transaction
@@ -636,7 +672,7 @@ abstract class BatchAnalysisDao {
         """
         SELECT stage FROM analysis_work_items
         WHERE batch_id = :batchId
-          AND status IN ('RUNNING', 'PENDING', 'PAUSED', 'RETRYABLE_FAILED')
+          AND status IN ('RUNNING', 'PENDING', 'PAUSED')
         ORDER BY CASE status
             WHEN 'RUNNING' THEN 0
             WHEN 'PAUSED' THEN 1

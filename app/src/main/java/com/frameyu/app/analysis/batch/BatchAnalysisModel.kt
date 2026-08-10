@@ -59,6 +59,8 @@ object AnalysisStageDependencies {
 
 object AnalyzerVersion {
     private const val NO_MODEL = "NO_MODEL"
+    private const val CONDITIONAL_CLASSIFICATION_DEPENDENCY_POLICY =
+        "conditional-detection-classification-dependency-v1"
     private const val HEX_DIGITS = "0123456789ABCDEF"
     private val modelSha256Pattern = Regex("[0-9A-Fa-f]{64}")
 
@@ -91,6 +93,33 @@ object AnalyzerVersion {
         return MessageDigest.getInstance("SHA-256")
             .digest(canonical.toByteArray(Charsets.UTF_8))
             .toUppercaseHex()
+    }
+
+    fun createConditionalDetection(
+        classificationModelSha256: String,
+        detectionModelSha256: String,
+        detectionPolicyVersion: String,
+    ): String {
+        val normalizedDetectionPolicyVersion = detectionPolicyVersion.trim()
+        require(normalizedDetectionPolicyVersion.isNotEmpty()) {
+            "检测策略版本去除首尾空白后不能为空"
+        }
+        val classificationAnalyzerVersion = create(
+            stage = AnalysisStage.CLASSIFICATION,
+            modelSha256 = classificationModelSha256,
+            policyVersion = CONDITIONAL_CLASSIFICATION_DEPENDENCY_POLICY,
+        )
+        return create(
+            stage = AnalysisStage.CONDITIONAL_DETECTION,
+            modelSha256 = detectionModelSha256,
+            policyVersion = buildString {
+                append("classificationAnalyzerVersion=")
+                append(classificationAnalyzerVersion)
+                append('\n')
+                append("detectionPolicyVersion=")
+                append(normalizedDetectionPolicyVersion)
+            },
+        )
     }
 
     private fun ByteArray.toUppercaseHex(): String = buildString(size * 2) {
