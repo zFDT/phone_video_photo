@@ -45,10 +45,7 @@ fun BatchAnalysisScreen(
         .collectAsState(initial = null)
     val currentStage by database.batchAnalysisDao().observeCurrentStage(batchId)
         .collectAsState(initial = null)
-    val failedItems by database.batchAnalysisDao().observeFailedItems(
-        batchId = batchId,
-        limit = BATCH_FAILURE_DETAIL_LIMIT,
-    )
+    val failedItems by database.batchAnalysisDao().observeFailedItems(batchId)
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var actionRunning by remember { mutableStateOf(false) }

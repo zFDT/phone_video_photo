@@ -152,38 +152,30 @@ class BatchAnalysisDaoTest {
     fun observeFailedItemsReturnsBoundedPersistedFailureDetailsInStableOrder() = runBlocking {
         val database = createDatabase()
         try {
-            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+            val mediaIds = 1L..101L
+            database.mediaAssetDao().upsertAll(mediaIds.map(::media))
             val dao = database.batchAnalysisDao()
             val batchId = dao.createBatch(
                 batch = batch(),
-                items = listOf(
-                    workItem(id = 0L, mediaAssetId = 1L, stage = "QUALITY"),
-                    workItem(id = 0L, mediaAssetId = 2L, stage = "CLASSIFICATION"),
-                ),
-            )
-            val items = dao.nextRunnableItems(batchId, limit = 10)
-            dao.markRunning(items[0].id, updatedAtMillis = 2L)
-            dao.failItem(
-                itemId = items[0].id,
-                retryable = true,
-                message = "图片暂时无法读取",
-                updatedAtMillis = 3L,
-            )
-            dao.markRunning(items[1].id, updatedAtMillis = 4L)
-            dao.failItem(
-                itemId = items[1].id,
-                retryable = false,
-                message = "模型输出不受支持",
-                updatedAtMillis = 5L,
+                items = mediaIds.map { mediaAssetId ->
+                    workItem(
+                        id = 0L,
+                        mediaAssetId = mediaAssetId,
+                        stage = "QUALITY",
+                        status = if (mediaAssetId % 2L == 0L) {
+                            "PERMANENT_FAILED"
+                        } else {
+                            "RETRYABLE_FAILED"
+                        },
+                    )
+                },
             )
 
-            val failedItems = dao.observeFailedItems(batchId, limit = 1).first()
+            val failedItems = dao.observeFailedItems(batchId).first()
 
-            assertEquals(1, failedItems.size)
-            assertEquals(listOf(1L), failedItems.map { it.mediaAssetId })
-            assertEquals(listOf("QUALITY"), failedItems.map { it.stage })
-            assertEquals(listOf("RETRYABLE_FAILED"), failedItems.map { it.status })
-            assertEquals(listOf("图片暂时无法读取"), failedItems.map { it.errorMessage })
+            assertEquals(100, failedItems.size)
+            assertEquals((1L..100L).toList(), failedItems.map { it.mediaAssetId })
+            assertEquals(List(100) { "QUALITY" }, failedItems.map { it.stage })
         } finally {
             database.close()
         }

@@ -689,13 +689,10 @@ abstract class BatchAnalysisDao {
         WHERE batch_id = :batchId
           AND status IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')
         ORDER BY id
-        LIMIT :limit
+        LIMIT 100
         """
     )
-    abstract fun observeFailedItems(
-        batchId: Long,
-        limit: Int,
-    ): Flow<List<AnalysisWorkItemEntity>>
+    abstract fun observeFailedItems(batchId: Long): Flow<List<AnalysisWorkItemEntity>>
 
     @Query("SELECT * FROM media_quality_results ORDER BY id DESC")
     abstract fun observeQualityResults(): Flow<List<MediaQualityResultEntity>>
