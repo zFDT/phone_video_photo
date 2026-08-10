@@ -11,14 +11,20 @@ enum class PendingMediaAuthorizationPhase {
 }
 
 data class PendingMediaAuthorization(
+    val requestId: String,
+    val createdAtMillis: Long,
     val requestType: PendingMediaAuthorizationType,
     val uris: List<String>,
     val currentUri: String?,
     val phase: PendingMediaAuthorizationPhase = PendingMediaAuthorizationPhase.AWAITING_RESULT,
 ) {
     init {
+        require(REQUEST_ID_PATTERN.matches(requestId)) { "授权请求 ID 格式无效" }
+        require(createdAtMillis >= 0L) { "授权请求时间无效" }
         require(uris.isNotEmpty()) { "授权请求至少需要一个 Uri" }
+        require(uris.size <= MAX_MEDIA_AUTHORIZATION_URIS) { "单次授权 Uri 数量超过上限" }
         require(uris.none(String::isBlank)) { "授权请求 Uri 不能为空" }
+        require(uris.distinct().size == uris.size) { "授权请求 Uri 不应重复" }
         when (requestType) {
             PendingMediaAuthorizationType.TRASH -> require(currentUri == null) {
                 "回收站请求不应包含当前 Uri"
@@ -42,6 +48,10 @@ sealed interface MediaAuthorizationAction {
     data class ReconcileTrash(val uris: List<String>) : MediaAuthorizationAction
 
     data class RetryRecoverableDelete(val uri: String) : MediaAuthorizationAction
+
+    data class ReconcileExpiredTrash(val uris: List<String>) : MediaAuthorizationAction
+
+    data class ReconcileExpiredRecoverableDelete(val uri: String) : MediaAuthorizationAction
 }
 
 data class MediaAuthorizationTransition(
@@ -49,7 +59,14 @@ data class MediaAuthorizationTransition(
     val action: MediaAuthorizationAction,
 )
 
-class MediaAuthorizationStateReducer {
+class MediaAuthorizationStateReducer(
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val expiryMillis: Long = MEDIA_AUTHORIZATION_EXPIRY_MILLIS,
+) {
+    init {
+        require(expiryMillis > 0L) { "授权过期时间必须大于零" }
+    }
+
     fun begin(
         current: PendingMediaAuthorization?,
         request: PendingMediaAuthorization,
@@ -61,10 +78,12 @@ class MediaAuthorizationStateReducer {
 
     fun onActivityResult(
         current: PendingMediaAuthorization?,
+        callbackRequestId: String?,
         granted: Boolean,
         continuationPresent: Boolean,
     ): MediaAuthorizationTransition {
         if (current == null ||
+            callbackRequestId != current.requestId ||
             current.phase != PendingMediaAuthorizationPhase.AWAITING_RESULT
         ) {
             return MediaAuthorizationTransition(current, MediaAuthorizationAction.None)
@@ -92,12 +111,19 @@ class MediaAuthorizationStateReducer {
         )
     }
 
-    fun recover(current: PendingMediaAuthorization?): MediaAuthorizationAction =
-        if (current?.phase == PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION) {
+    fun recover(current: PendingMediaAuthorization?): MediaAuthorizationAction = when {
+        current == null -> MediaAuthorizationAction.None
+        current.phase == PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION ->
             reconciliationAction(current)
-        } else {
-            MediaAuthorizationAction.None
-        }
+        current.phase == PendingMediaAuthorizationPhase.AWAITING_RESULT && isExpired(current) ->
+            expiredReconciliationAction(current)
+        else -> MediaAuthorizationAction.None
+    }
+
+    fun isExpired(pending: PendingMediaAuthorization): Boolean {
+        val ageMillis = clock() - pending.createdAtMillis
+        return ageMillis < 0L || ageMillis >= expiryMillis
+    }
 
     fun complete(
         current: PendingMediaAuthorization?,
@@ -123,6 +149,19 @@ class MediaAuthorizationStateReducer {
         current
     }
 
+    fun clearExpired(
+        current: PendingMediaAuthorization?,
+        expired: PendingMediaAuthorization,
+    ): PendingMediaAuthorization? = if (
+        current == expired &&
+        expired.phase == PendingMediaAuthorizationPhase.AWAITING_RESULT &&
+        isExpired(expired)
+    ) {
+        null
+    } else {
+        current
+    }
+
     private fun reconciliationAction(
         pending: PendingMediaAuthorization,
     ): MediaAuthorizationAction = when (pending.requestType) {
@@ -132,4 +171,30 @@ class MediaAuthorizationStateReducer {
         PendingMediaAuthorizationType.RECOVERABLE_DELETE ->
             MediaAuthorizationAction.RetryRecoverableDelete(checkNotNull(pending.currentUri))
     }
+
+    private fun expiredReconciliationAction(
+        pending: PendingMediaAuthorization,
+    ): MediaAuthorizationAction = when (pending.requestType) {
+        PendingMediaAuthorizationType.TRASH -> MediaAuthorizationAction.ReconcileExpiredTrash(
+            pending.uris,
+        )
+        PendingMediaAuthorizationType.RECOVERABLE_DELETE ->
+            MediaAuthorizationAction.ReconcileExpiredRecoverableDelete(checkNotNull(pending.currentUri))
+    }
 }
+
+fun chunkMediaAuthorizationUris(
+    uris: List<String>,
+): List<List<String>> = uris.distinct().chunked(MAX_MEDIA_AUTHORIZATION_URIS)
+
+const val MAX_MEDIA_AUTHORIZATION_URIS = 100
+const val MEDIA_AUTHORIZATION_EXPIRY_MILLIS = 10L * 60L * 1000L
+const val MEDIA_AUTHORIZATION_REQUEST_ID_LENGTH = 32
+
+private val REQUEST_ID_PATTERN = Regex("[0-9a-f]{$MEDIA_AUTHORIZATION_REQUEST_ID_LENGTH}")
+
+fun isValidMediaAuthorizationRequestId(requestId: String?): Boolean =
+    requestId != null && REQUEST_ID_PATTERN.matches(requestId)
+
+fun isValidPersistedMediaAuthorizationUriCount(count: Int): Boolean =
+    count in 1..MAX_MEDIA_AUTHORIZATION_URIS

@@ -4,6 +4,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.io.InputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -20,34 +23,44 @@ class DeletionSafetyTest {
     }
 
     @Test
-    fun `可取消内容摘要在完整读取前传播取消`() = runBlocking {
-        val scanJob = Job()
-        var chunksRead = 0
-        val chunks = Iterable {
-            listOf(ByteArray(1024 * 1024), ByteArray(1024 * 1024)).iterator().let { delegate ->
-                object : Iterator<ByteArray> {
-                    override fun hasNext(): Boolean = delegate.hasNext()
+    fun `可取消内容摘要成功后关闭输入流`() = runBlocking {
+        val input = ObservableInputStream("abc".toByteArray())
 
-                    override fun next(): ByteArray {
-                        chunksRead += 1
-                        return delegate.next().also {
-                            if (chunksRead == 1) {
-                                scanJob.cancel(CancellationException("停止删除复验"))
-                            }
-                        }
-                    }
-                }
+        val hash = sha256HexCancellable(input)
+
+        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", hash)
+        assertTrue(input.closed)
+    }
+
+    @Test
+    fun `可取消内容摘要在完整读取前传播取消并关闭输入流`() = runBlocking {
+        val scanJob = Job()
+        val input = ObservableInputStream(ByteArray(2 * 1024 * 1024)) { readCount ->
+            if (readCount == 1) {
+                scanJob.cancel(CancellationException("停止删除复验"))
             }
         }
 
         val thrown = runCatching {
             withContext(scanJob) {
-                sha256HexCancellable(chunks)
+                sha256HexCancellable(input)
             }
         }.exceptionOrNull()
 
         assertTrue(thrown is CancellationException)
-        assertEquals(1, chunksRead)
+        assertEquals(1, input.readCount)
+        assertTrue(input.closed)
+    }
+
+    @Test
+    fun `可取消内容摘要读取异常时立即关闭输入流`() = runBlocking {
+        val input = ObservableInputStream(ByteArray(2 * 1024 * 1024), failAtRead = 2)
+
+        val thrown = runCatching { sha256HexCancellable(input) }.exceptionOrNull()
+
+        assertTrue(thrown is IOException)
+        assertEquals(2, input.readCount)
+        assertTrue(input.closed)
     }
 
     @Test
@@ -243,4 +256,29 @@ class DeletionSafetyTest {
         sizeBytes = sizeBytes,
         lastModifiedMillis = lastModifiedMillis,
     )
+
+    private class ObservableInputStream(
+        bytes: ByteArray,
+        private val failAtRead: Int? = null,
+        private val afterRead: (Int) -> Unit = {},
+    ) : InputStream() {
+        private val delegate = ByteArrayInputStream(bytes)
+        var readCount: Int = 0
+            private set
+        var closed: Boolean = false
+            private set
+
+        override fun read(): Int = delegate.read()
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            readCount += 1
+            if (readCount == failAtRead) throw IOException("读取失败")
+            return delegate.read(buffer, offset, length).also { afterRead(readCount) }
+        }
+
+        override fun close() {
+            closed = true
+            delegate.close()
+        }
+    }
 }

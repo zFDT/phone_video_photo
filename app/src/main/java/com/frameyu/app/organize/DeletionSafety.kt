@@ -7,6 +7,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.InputStream
 import java.security.MessageDigest
 
 data class LiveMediaMetadata(
@@ -282,14 +283,22 @@ fun sha256Hex(chunks: Iterable<ByteArray>): String {
     return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
 }
 
-suspend fun sha256HexCancellable(chunks: Iterable<ByteArray>): String {
+suspend fun sha256HexCancellable(inputStream: InputStream): String = inputStream.use { stream ->
     val digest = MessageDigest.getInstance("SHA-256")
-    chunks.forEach { chunk ->
+    val buffer = ByteArray(SHA_256_BUFFER_SIZE)
+    while (true) {
         currentCoroutineContext().ensureActive()
-        digest.update(chunk)
+        val count = stream.read(buffer)
+        currentCoroutineContext().ensureActive()
+        if (count < 0) break
+        if (count > 0) {
+            digest.update(buffer, 0, count)
+        }
     }
-    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    digest.digest().joinToString("") { byte -> "%02x".format(byte) }
 }
+
+private const val SHA_256_BUFFER_SIZE = 1024 * 1024
 
 sealed interface DeletionExecutionResult {
     data class Completed(val result: MediaDeletionResult) : DeletionExecutionResult

@@ -23,10 +23,15 @@ class AndroidPendingMediaAuthorizationStore(context: Context) {
                 ?.let(PendingMediaAuthorizationPhase::valueOf)
                 ?: return@runCatching null
             val count = preferences.getInt(KEY_URI_COUNT, 0)
+            if (!isValidPersistedMediaAuthorizationUriCount(count)) {
+                return@runCatching null
+            }
             val uris = (0 until count).map { index ->
                 requireNotNull(preferences.getString("$KEY_URI_PREFIX$index", null))
             }
             PendingMediaAuthorization(
+                requestId = requireNotNull(preferences.getString(KEY_REQUEST_ID, null)),
+                createdAtMillis = preferences.getLong(KEY_CREATED_AT_MILLIS, -1L),
                 requestType = type,
                 uris = uris,
                 currentUri = preferences.getString(KEY_CURRENT_URI, null),
@@ -42,6 +47,8 @@ class AndroidPendingMediaAuthorizationStore(context: Context) {
             .putBoolean(KEY_INITIALIZED, true)
         if (pending != null) {
             editor
+                .putString(KEY_REQUEST_ID, pending.requestId)
+                .putLong(KEY_CREATED_AT_MILLIS, pending.createdAtMillis)
                 .putString(KEY_TYPE, pending.requestType.name)
                 .putString(KEY_PHASE, pending.phase.name)
                 .putInt(KEY_URI_COUNT, pending.uris.size)
@@ -50,39 +57,30 @@ class AndroidPendingMediaAuthorizationStore(context: Context) {
             }
             pending.currentUri?.let { editor.putString(KEY_CURRENT_URI, it) }
         }
-        check(editor.commit()) { "无法持久化媒体授权状态" }
+        editor.apply()
     }
 
     companion object {
         private const val PREFERENCES_NAME = "media_authorization_pending"
         private const val KEY_INITIALIZED = "initialized"
+        private const val KEY_REQUEST_ID = "request_id"
+        private const val KEY_CREATED_AT_MILLIS = "created_at_millis"
         private const val KEY_TYPE = "type"
         private const val KEY_PHASE = "phase"
         private const val KEY_URI_COUNT = "uri_count"
         private const val KEY_URI_PREFIX = "uri_"
         private const val KEY_CURRENT_URI = "current_uri"
 
-        fun toBundle(pending: PendingMediaAuthorization?): Bundle? = pending?.let {
-            Bundle().apply {
-                putString(KEY_TYPE, it.requestType.name)
-                putString(KEY_PHASE, it.phase.name)
-                putStringArrayList(KEY_URI_PREFIX, ArrayList(it.uris))
-                putString(KEY_CURRENT_URI, it.currentUri)
+        fun toBundle(requestId: String?): Bundle? = requestId
+            ?.takeIf(::isValidMediaAuthorizationRequestId)
+            ?.let {
+                Bundle().apply {
+                    putString(KEY_REQUEST_ID, it)
+                }
             }
-        }
 
-        fun fromBundle(bundle: Bundle?): PendingMediaAuthorization? = runCatching {
-            bundle ?: return@runCatching null
-            PendingMediaAuthorization(
-                requestType = PendingMediaAuthorizationType.valueOf(
-                    requireNotNull(bundle.getString(KEY_TYPE)),
-                ),
-                uris = requireNotNull(bundle.getStringArrayList(KEY_URI_PREFIX)),
-                currentUri = bundle.getString(KEY_CURRENT_URI),
-                phase = PendingMediaAuthorizationPhase.valueOf(
-                    requireNotNull(bundle.getString(KEY_PHASE)),
-                ),
-            )
+        fun requestIdFromBundle(bundle: Bundle?): String? = runCatching {
+            bundle?.getString(KEY_REQUEST_ID)?.takeIf(::isValidMediaAuthorizationRequestId)
         }.getOrNull()
     }
 }

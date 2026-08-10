@@ -47,6 +47,7 @@ import com.frameyu.app.organize.ContentHashDuplicateDetector
 import com.frameyu.app.organize.ContentHashReader
 import com.frameyu.app.organize.OrganizerRepository
 import com.frameyu.app.organize.MediaDeletionResult
+import com.frameyu.app.organize.MediaDeletionFailure
 import com.frameyu.app.organize.MediaDeleteAttempt
 import com.frameyu.app.organize.MediaAuthorizationGate
 import com.frameyu.app.organize.MediaAuthorizationAction
@@ -57,6 +58,7 @@ import com.frameyu.app.organize.PendingMediaAuthorizationType
 import com.frameyu.app.organize.executeMediaDeletion
 import com.frameyu.app.organize.executeRecoverableMediaDeletion
 import com.frameyu.app.organize.executeTrashRequestDeletion
+import com.frameyu.app.organize.chunkMediaAuthorizationUris
 import com.frameyu.app.organize.sha256HexCancellable
 import com.frameyu.app.organize.SimilarMediaDuplicateDetector
 import com.frameyu.app.organize.similarPhotoCandidates
@@ -66,11 +68,15 @@ import com.frameyu.app.settings.SettingsStore
 import com.frameyu.app.ui.settings.SettingsScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     private val libraryViewModel by viewModels<LibraryViewModel> {
@@ -102,6 +108,7 @@ class MainActivity : ComponentActivity() {
     private val mediaAuthorizationLock = Any()
     private var pendingMediaAuthorization: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
     private var durablePendingMediaAuthorization: PendingMediaAuthorization? = null
+    private var mediaAuthorizationCallbackRequestId: String? = null
     private val mediaAuthorizationStore by lazy {
         AndroidPendingMediaAuthorizationStore(this)
     }
@@ -118,7 +125,9 @@ class MainActivity : ComponentActivity() {
                 metadataReader = AndroidLiveMediaMetadataReader(contentResolver),
                 sha256Reader = ContentSha256Reader { uri ->
                     withContext(Dispatchers.IO) {
-                        sha256HexCancellable(hashReader.readChunks(uri))
+                        val input = contentResolver.openInputStream(Uri.parse(uri))
+                            ?: error("无法打开媒体：$uri")
+                        sha256HexCancellable(input)
                     }
                 },
             ),
@@ -142,7 +151,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         restorePendingMediaAuthorization(savedInstanceState)
-        recoverGrantedMediaAuthorization()
+        recoverPendingMediaAuthorization()
         enableEdgeToEdge()
         hasMediaPermission.value = mediaUriAccess.hasMediaReadPermission()
         settingsSnapshot.value = settingsStore.read()
@@ -258,7 +267,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        AndroidPendingMediaAuthorizationStore.toBundle(durablePendingMediaAuthorization)?.let {
+        AndroidPendingMediaAuthorizationStore.toBundle(mediaAuthorizationCallbackRequestId)?.let {
             outState.putBundle(STATE_PENDING_MEDIA_AUTHORIZATION, it)
         }
         super.onSaveInstanceState(outState)
@@ -304,7 +313,7 @@ class MainActivity : ComponentActivity() {
         val distinctUris = uriStrings.distinct()
         if (distinctUris.isEmpty()) return MediaDeletionResult(emptyList(), emptyList())
         return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> moveToSystemTrashRequest(distinctUris)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> moveToSystemTrashRequests(distinctUris)
             Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> executeRecoverableMediaDeletion(
                 uris = distinctUris,
                 deleteOne = { uriString ->
@@ -315,6 +324,8 @@ class MainActivity : ComponentActivity() {
                         if (deleted) MediaDeleteAttempt.Deleted else MediaDeleteAttempt.NotHandled
                     } catch (securityError: RecoverableSecurityException) {
                         val request = PendingMediaAuthorization(
+                            requestId = newMediaAuthorizationRequestId(),
+                            createdAtMillis = System.currentTimeMillis(),
                             requestType = PendingMediaAuthorizationType.RECOVERABLE_DELETE,
                             uris = listOf(uriString),
                             currentUri = uriString,
@@ -342,10 +353,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 系统回收站面板每次最多携带 100 个 Uri。Activity 存活时逐块处理；若进程中断，
+     * 持久层只保留当前块，未发起的块仍留在 Room，用户可重新选择，避免误判为已处理。
+     */
+    private suspend fun moveToSystemTrashRequests(
+        uriStrings: List<String>,
+    ): MediaDeletionResult {
+        val chunks = chunkMediaAuthorizationUris(uriStrings)
+        val succeeded = mutableListOf<String>()
+        val failures = mutableListOf<MediaDeletionFailure>()
+        chunks.forEachIndexed { index, chunk ->
+            val result = moveToSystemTrashRequest(chunk)
+            succeeded += result.succeededUris
+            failures += result.failures
+            if (result.failures.isNotEmpty()) {
+                chunks.drop(index + 1).flatten().forEach { uri ->
+                    failures += MediaDeletionFailure(uri, "前一批系统授权未完成，本项尚未处理")
+                }
+                return MediaDeletionResult(succeeded.toList(), failures.toList())
+            }
+        }
+        return MediaDeletionResult(succeeded.toList(), failures.toList())
+    }
+
     private suspend fun moveToSystemTrashRequest(
         uriStrings: List<String>,
     ): MediaDeletionResult {
         val request = PendingMediaAuthorization(
+            requestId = newMediaAuthorizationRequestId(),
+            createdAtMillis = System.currentTimeMillis(),
             requestType = PendingMediaAuthorizationType.TRASH,
             uris = uriStrings,
             currentUri = null,
@@ -372,6 +409,7 @@ class MainActivity : ComponentActivity() {
         request: PendingMediaAuthorization,
     ): Boolean =
         mediaAuthorizationGate.run {
+            reconcilePendingBeforeNewRequest()
             val begin = mediaAuthorizationReducer.begin(
                 current = durablePendingMediaAuthorization,
                 request = request,
@@ -393,6 +431,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 try {
+                    mediaAuthorizationCallbackRequestId = request.requestId
                     mediaAuthorizationLauncher.launch(
                         IntentSenderRequest.Builder(intentSender).build(),
                     )
@@ -404,6 +443,9 @@ class MainActivity : ComponentActivity() {
                         } else {
                             false
                         }
+                    }
+                    if (mediaAuthorizationCallbackRequestId == request.requestId) {
+                        mediaAuthorizationCallbackRequestId = null
                     }
                     updateDurableMediaAuthorization(
                         mediaAuthorizationReducer.launchFailed(
@@ -419,12 +461,15 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun handleMediaAuthorizationResult(granted: Boolean) {
+        val callbackRequestId = mediaAuthorizationCallbackRequestId
+        mediaAuthorizationCallbackRequestId = null
         val continuation = synchronized(mediaAuthorizationLock) {
             pendingMediaAuthorization.also { pendingMediaAuthorization = null }
         }
         val continuationPresent = continuation?.isActive == true
         val transition = mediaAuthorizationReducer.onActivityResult(
             current = durablePendingMediaAuthorization,
+            callbackRequestId = callbackRequestId,
             granted = granted,
             continuationPresent = continuationPresent,
         )
@@ -437,6 +482,8 @@ class MainActivity : ComponentActivity() {
             }
             is MediaAuthorizationAction.ReconcileTrash,
             is MediaAuthorizationAction.RetryRecoverableDelete,
+            is MediaAuthorizationAction.ReconcileExpiredTrash,
+            is MediaAuthorizationAction.ReconcileExpiredRecoverableDelete,
             -> reconcileMediaAuthorization(action, transition.pending)
             MediaAuthorizationAction.None,
             MediaAuthorizationAction.RejectNewRequest,
@@ -446,16 +493,19 @@ class MainActivity : ComponentActivity() {
 
     private fun restorePendingMediaAuthorization(savedInstanceState: Bundle?) {
         val stored = mediaAuthorizationStore.read()
-        durablePendingMediaAuthorization = if (stored.initialized) {
-            stored.pending
-        } else {
-            AndroidPendingMediaAuthorizationStore.fromBundle(
-                savedInstanceState?.getBundle(STATE_PENDING_MEDIA_AUTHORIZATION),
-            ).also(mediaAuthorizationStore::write)
+        if (!stored.initialized) {
+            mediaAuthorizationStore.write(null)
+        }
+        durablePendingMediaAuthorization = stored.pending
+        val restoredRequestId = AndroidPendingMediaAuthorizationStore.requestIdFromBundle(
+            savedInstanceState?.getBundle(STATE_PENDING_MEDIA_AUTHORIZATION),
+        )
+        mediaAuthorizationCallbackRequestId = restoredRequestId?.takeIf { requestId ->
+            durablePendingMediaAuthorization?.requestId == requestId
         }
     }
 
-    private fun recoverGrantedMediaAuthorization() {
+    private fun recoverPendingMediaAuthorization() {
         val pending = durablePendingMediaAuthorization ?: return
         reconcileMediaAuthorization(mediaAuthorizationReducer.recover(pending), pending)
     }
@@ -464,21 +514,32 @@ class MainActivity : ComponentActivity() {
         action: MediaAuthorizationAction,
         expected: PendingMediaAuthorization?,
     ) {
-        if (expected == null) return
+        if (expected == null || action == MediaAuthorizationAction.None) return
+        lifecycleScope.launch {
+            mediaAuthorizationGate.run {
+                reconcileMediaAuthorizationNow(action, expected)
+            }
+        }
+    }
+
+    private suspend fun reconcilePendingBeforeNewRequest() {
+        val expected = durablePendingMediaAuthorization ?: return
+        reconcileMediaAuthorizationNow(mediaAuthorizationReducer.recover(expected), expected)
+    }
+
+    private suspend fun reconcileMediaAuthorizationNow(
+        action: MediaAuthorizationAction,
+        expected: PendingMediaAuthorization,
+    ) {
         when (action) {
-            is MediaAuthorizationAction.ReconcileTrash -> lifecycleScope.launch {
-                try {
-                    removeMediaFromIndex(action.uris)
-                    completeMatchingMediaAuthorization(expected)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // 保留 durable pending，供下次 Activity 恢复时继续对账。
-                }
-            }
-            is MediaAuthorizationAction.RetryRecoverableDelete -> lifecycleScope.launch {
-                reconcileRecoverableDelete(action.uri, expected)
-            }
+            is MediaAuthorizationAction.ReconcileTrash ->
+                reconcileTrashAuthorization(action.uris, expected, expired = false)
+            is MediaAuthorizationAction.ReconcileExpiredTrash ->
+                reconcileTrashAuthorization(action.uris, expected, expired = true)
+            is MediaAuthorizationAction.RetryRecoverableDelete ->
+                reconcileRecoverableDelete(action.uri, expected, expired = false)
+            is MediaAuthorizationAction.ReconcileExpiredRecoverableDelete ->
+                reconcileRecoverableDelete(action.uri, expected, expired = true)
             MediaAuthorizationAction.None,
             MediaAuthorizationAction.RejectNewRequest,
             is MediaAuthorizationAction.ResumeContinuation,
@@ -486,47 +547,125 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun reconcileRecoverableDelete(
-        uriString: String,
+    private suspend fun reconcileTrashAuthorization(
+        uriStrings: List<String>,
         expected: PendingMediaAuthorization,
+        expired: Boolean,
     ) {
-        val deleted = try {
-            withContext(Dispatchers.IO) {
-                contentResolver.delete(Uri.parse(uriString), null, null) > 0
+        var allStatesKnown = true
+        try {
+            val trashedUris = withContext(Dispatchers.IO) {
+                uriStrings.mapNotNull { uriString ->
+                    currentCoroutineContext().ensureActive()
+                    val state = readTrashState(uriString)
+                    currentCoroutineContext().ensureActive()
+                    when (state) {
+                        MediaTrashState.TRASHED -> uriString
+                        MediaTrashState.PRESENT,
+                        MediaTrashState.MISSING,
+                        -> null
+                        MediaTrashState.UNKNOWN -> {
+                            allStatesKnown = false
+                            null
+                        }
+                    }
+                }
+            }
+            if (trashedUris.isNotEmpty()) {
+                withContext(NonCancellable) {
+                    removeMediaFromIndex(trashedUris)
+                }
+            }
+            if (!expired && allStatesKnown) {
+                completeMatchingMediaAuthorization(expected)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            completeMatchingMediaAuthorization(expected)
-            return
+            // 已授权记录保留到下次恢复；过期记录在 finally 中释放，且不会误删 Room。
+        } finally {
+            if (expired) clearExpiredMediaAuthorization(expected)
         }
-        val shouldRemoveFromIndex = deleted || !mediaUriStillExists(uriString)
-        if (shouldRemoveFromIndex) {
-            try {
-                removeMediaFromIndex(listOf(uriString))
+    }
+
+    private suspend fun reconcileRecoverableDelete(
+        uriString: String,
+        expected: PendingMediaAuthorization,
+        expired: Boolean,
+    ) {
+        var roomSyncCompleted = true
+        try {
+            val deleted = try {
+                withContext(Dispatchers.IO) {
+                    contentResolver.delete(Uri.parse(uriString), null, null) > 0
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                return
+                false
             }
+            val shouldRemoveFromIndex = deleted || mediaUriPresence(uriString) == MediaUriPresence.MISSING
+            if (shouldRemoveFromIndex) {
+                try {
+                    withContext(NonCancellable) {
+                        removeMediaFromIndex(listOf(uriString))
+                    }
+                } catch (_: Exception) {
+                    roomSyncCompleted = false
+                }
+            }
+            if (!expired && roomSyncCompleted) {
+                completeMatchingMediaAuthorization(expected)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } finally {
+            if (expired) clearExpiredMediaAuthorization(expected)
         }
-        completeMatchingMediaAuthorization(expected)
     }
 
-    private suspend fun mediaUriStillExists(uriString: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun mediaUriPresence(uriString: String): MediaUriPresence = withContext(Dispatchers.IO) {
         try {
-            contentResolver.query(
+            val cursor = contentResolver.query(
                 Uri.parse(uriString),
                 arrayOf(MediaStore.MediaColumns._ID),
                 null,
                 null,
                 null,
-            )?.use { cursor -> cursor.moveToFirst() } ?: true
+            ) ?: return@withContext MediaUriPresence.UNKNOWN
+            cursor.use {
+                if (it.moveToFirst()) MediaUriPresence.PRESENT else MediaUriPresence.MISSING
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            true
+            MediaUriPresence.UNKNOWN
         }
+    }
+
+    private fun readTrashState(uriString: String): MediaTrashState = try {
+        val cursor = contentResolver.query(
+            Uri.parse(uriString),
+            arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_TRASHED),
+            null,
+            null,
+            null,
+        ) ?: return MediaTrashState.UNKNOWN
+        cursor.use {
+            if (!it.moveToFirst()) return MediaTrashState.MISSING
+            val trashedColumn = it.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
+            if (trashedColumn < 0) {
+                MediaTrashState.UNKNOWN
+            } else if (it.getInt(trashedColumn) == 1) {
+                MediaTrashState.TRASHED
+            } else {
+                MediaTrashState.PRESENT
+            }
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        MediaTrashState.UNKNOWN
     }
 
     private fun completeRecoverableDeleteAuthorization(uriString: String) {
@@ -540,7 +679,8 @@ class MainActivity : ComponentActivity() {
 
     private fun completeMatchingMediaAuthorization(request: PendingMediaAuthorization) {
         val current = durablePendingMediaAuthorization ?: return
-        if (current.requestType != request.requestType ||
+        if (current.requestId != request.requestId ||
+            current.requestType != request.requestType ||
             current.uris != request.uris ||
             current.currentUri != request.currentUri ||
             current.phase != PendingMediaAuthorizationPhase.GRANTED_PENDING_RECONCILIATION
@@ -548,6 +688,14 @@ class MainActivity : ComponentActivity() {
             return
         }
         updateDurableMediaAuthorization(mediaAuthorizationReducer.complete(current, current))
+    }
+
+    private fun clearExpiredMediaAuthorization(request: PendingMediaAuthorization) {
+        val current = durablePendingMediaAuthorization ?: return
+        if (mediaAuthorizationCallbackRequestId == request.requestId) {
+            mediaAuthorizationCallbackRequestId = null
+        }
+        updateDurableMediaAuthorization(mediaAuthorizationReducer.clearExpired(current, request))
     }
 
     private fun updateDurableMediaAuthorization(pending: PendingMediaAuthorization?) {
@@ -560,6 +708,9 @@ class MainActivity : ComponentActivity() {
         (application as FrameYuApplication).database.mediaAssetDao()
             .deleteByUris(succeededUris)
     }
+
+    private fun newMediaAuthorizationRequestId(): String =
+        UUID.randomUUID().toString().replace("-", "")
 
     /** 以分块流读取媒体，避免长视频在完全重复扫描时一次性进入内存。 */
     private fun contentHashReader(): ContentHashReader = ContentHashReader { uri ->
@@ -579,5 +730,18 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val HASH_BUFFER_SIZE = 1024 * 1024
         const val STATE_PENDING_MEDIA_AUTHORIZATION = "pending_media_authorization"
+    }
+
+    private enum class MediaTrashState {
+        TRASHED,
+        PRESENT,
+        MISSING,
+        UNKNOWN,
+    }
+
+    private enum class MediaUriPresence {
+        PRESENT,
+        MISSING,
+        UNKNOWN,
     }
 }
