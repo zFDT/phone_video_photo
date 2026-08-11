@@ -87,7 +87,7 @@ $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
 
 结果为 `BUILD SUCCESSFUL`：71 个测试套件、476 个 JVM 测试，0 failure、0 error；74 个 Gradle 任务全部重新执行，`:app:assembleDebug` 与 `:app:assembleDebugAndroidTest` 均通过。`git diff --check` 通过。
 
-Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,565,784 字节，SHA-256 为 `AD25E9A0B552D74DE8CB8CD0AFC8B9DDAD5B390BE9269C485A3EB20B52BFDF48`；AndroidTest APK 大小为 1,139,313 字节，SHA-256 为 `AB15A33910B05D6F2179147382E6A0730788582113E681125FE9BF331D6191ED`。两个生成物均不提交，也不在测试后删除。
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,565,784 字节，SHA-256 为 `9242AC4D2ACDB8B5FC6E2BCC3004EF9EE498296EA90E397B34033292CDF497F4`；AndroidTest APK 大小为 1,139,577 字节，SHA-256 为 `63D5F17DDEE606C836DC79C1086A24F1DD021D87B12EE6BBBB9A6C35342D4F9E`。两个生成物均不提交，也不在测试后删除。
 
 当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
