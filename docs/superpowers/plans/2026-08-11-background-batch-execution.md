@@ -65,7 +65,7 @@
 - 创建：`app/src/test/java/com/frameyu/app/system/BackgroundPacingPolicyTest.kt`
 - 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
 
-- [ ] **步骤 1：编写可见性计数失败测试**
+- [x] **步骤 1：编写可见性计数失败测试**
 
 ```kotlin
 class AppVisibilityTrackerTest {
@@ -91,7 +91,7 @@ class AppVisibilityTrackerTest {
 }
 ```
 
-- [ ] **步骤 2：编写节流策略失败测试**
+- [x] **步骤 2：编写节流策略失败测试**
 
 ```kotlin
 @Test
@@ -103,7 +103,7 @@ fun `后台只节流重模型阶段`() {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认失败**
+- [x] **步骤 3：运行测试确认失败**
 
 运行：
 
@@ -113,7 +113,7 @@ fun `后台只节流重模型阶段`() {
 
 预期：FAIL，缺少 `AppVisibilityState` 和 `BackgroundPacingPolicy`。
 
-- [ ] **步骤 4：实现最小可见性边界**
+- [x] **步骤 4：实现最小可见性边界**
 
 ```kotlin
 enum class AppVisibility { FOREGROUND, BACKGROUND }
@@ -133,7 +133,7 @@ class AppVisibilityState {
 
 `ProcessAppVisibilityTracker` 实现 `Application.ActivityLifecycleCallbacks`，只在 `onActivityStarted` 和 `onActivityStopped` 更新上述状态，其余回调为空实现。
 
-- [ ] **步骤 5：实现纯节流策略并在 Application 注册**
+- [x] **步骤 5：实现纯节流策略并在 Application 注册**
 
 ```kotlin
 class BackgroundPacingPolicy(
@@ -150,7 +150,7 @@ class BackgroundPacingPolicy(
 
 `FrameYuApplication.onCreate()` 调用 `registerActivityLifecycleCallbacks(appVisibilityTracker)`；tracker 属性在 Worker factory 和 runner 创建前可读取。
 
-- [ ] **步骤 6：运行测试和编译**
+- [x] **步骤 6：运行测试和编译**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.system.*' :app:compileDebugKotlin
@@ -158,7 +158,7 @@ class BackgroundPacingPolicy(
 
 预期：PASS，Kotlin 编译成功。
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/system app/src/test/java/com/frameyu/app/system app/src/main/java/com/frameyu/app/FrameYuApplication.kt
@@ -172,7 +172,7 @@ git commit -m "feat(P1): 增加后台分析节流策略"
 - 修改：`app/src/test/java/com/frameyu/app/analysis/batch/BatchAnalysisRunnerTest.kt`
 - 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
 
-- [ ] **步骤 1：编写持久化顺序失败测试**
+- [x] **步骤 1：编写持久化顺序失败测试**
 
 在 `BatchAnalysisRunnerTest` 创建一个 `CLASSIFICATION` 工作项，记录事件：
 
@@ -189,7 +189,7 @@ assertTrue(events.indexOf("store.complete") < events.indexOf("pace:CLASSIFICATIO
 
 再验证 `QUALITY` 不调用 pacer，以及 pause/cancel 控制态被观察到后不调用 pacer。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.BatchAnalysisRunnerTest'
@@ -197,7 +197,7 @@ assertTrue(events.indexOf("store.complete") < events.indexOf("pace:CLASSIFICATIO
 
 预期：FAIL，`BatchAnalysisRunner` 尚无 `pacer` 参数。
 
-- [ ] **步骤 3：实现批次 pacer 边界**
+- [x] **步骤 3：实现批次 pacer 边界**
 
 ```kotlin
 fun interface BatchWorkPacer {
@@ -214,7 +214,7 @@ class BatchAnalysisRunner(
 
 只有工作项已经 `completeItem` 或 `failItem` 成功、进度已发布、控制态仍为当前 `RUNNING` generation 时才调用 `pacer.awaitAfter(item.stage)`。依赖未完成、旧 generation、暂停和取消路径不得人为等待。
 
-- [ ] **步骤 4：在 Application 注入可取消 delay**
+- [x] **步骤 4：在 Application 注入可取消 delay**
 
 ```kotlin
 pacer = BatchWorkPacer { stage ->
@@ -228,7 +228,7 @@ pacer = BatchWorkPacer { stage ->
 
 不得捕获 `CancellationException`。
 
-- [ ] **步骤 5：运行批次回归测试**
+- [x] **步骤 5：运行批次回归测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.*' :app:compileDebugKotlin
@@ -236,7 +236,7 @@ pacer = BatchWorkPacer { stage ->
 
 预期：PASS，现有暂停、generation、恢复和通知节流测试均通过。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/analysis/batch/BatchAnalysisWorker.kt app/src/test/java/com/frameyu/app/analysis/batch/BatchAnalysisRunnerTest.kt app/src/main/java/com/frameyu/app/FrameYuApplication.kt
@@ -252,7 +252,7 @@ git commit -m "feat(P1): 批次后台运行时主动让出 CPU"
 - 修改：`app/src/androidTest/java/com/frameyu/app/sampling/RoomVideoAnalysisWorkerRunnerTest.kt`
 - 修改：`app/src/main/java/com/frameyu/app/FrameYuApplication.kt`
 
-- [ ] **步骤 1：编写 checkpoint 后回调顺序测试**
+- [x] **步骤 1：编写 checkpoint 后回调顺序测试**
 
 ```kotlin
 @Test
@@ -269,7 +269,7 @@ fun `节流回调发生在 checkpoint 保存和进度发布之后`() = runBlocki
 
 增加一个 `onCheckpointCommitted` 抛出 `CancellationException` 的测试，断言同一实例原样传播。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.sampling.VideoAnalysisTaskTest'
@@ -277,7 +277,7 @@ fun `节流回调发生在 checkpoint 保存和进度发布之后`() = runBlocki
 
 预期：FAIL，缺少 `onCheckpointCommitted` 参数。
 
-- [ ] **步骤 3：实现 checkpoint 后回调**
+- [x] **步骤 3：实现 checkpoint 后回调**
 
 ```kotlin
 suspend fun run(
@@ -292,11 +292,11 @@ suspend fun run(
 
 固定顺序为 `checkpointStore.save(progress)`、`onProgress(progress)`、`onCheckpointCommitted(progress)`。任何节流取消不得改写已保存 checkpoint。
 
-- [ ] **步骤 4：给视频 runner 注入 pacer**
+- [x] **步骤 4：给视频 runner 注入 pacer**
 
 `RoomVideoAnalysisWorkerRunner` 增加 `afterCheckpoint: suspend () -> Unit = {}`。生产注入读取 tracker，并以 `isHeavyUnit = true` 调用同一 `BackgroundPacingPolicy`；后台等待 200 ms，前台不等待。调用前复查 taskId + generation 仍为 `RUNNING`，温控等待继续由 `awaitThermalWindow` 独立处理且优先。
 
-- [ ] **步骤 5：编写并运行 Room runner 仪器测试**
+- [x] **步骤 5：编写并运行 Room runner 仪器测试**
 
 测试用内存 Room 和假帧源执行两个采样点，记录 `save checkpoint` 后才出现 `pace`，并验证控制态改变后不再 pace。
 
@@ -307,7 +307,7 @@ adb shell am instrument -w -e class com.frameyu.app.sampling.RoomVideoAnalysisWo
 
 预期：JVM 测试 PASS；仪器测试 `OK` 且 0 failures。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/sampling/VideoAnalysisTask.kt app/src/test/java/com/frameyu/app/sampling/VideoAnalysisTaskTest.kt app/src/main/java/com/frameyu/app/sampling/RoomVideoAnalysisWorkerRunner.kt app/src/androidTest/java/com/frameyu/app/sampling/RoomVideoAnalysisWorkerRunnerTest.kt app/src/main/java/com/frameyu/app/FrameYuApplication.kt
@@ -321,7 +321,7 @@ git commit -m "feat(P1): 长视频按帧断点后台节流"
 - 创建：`app/src/test/java/com/frameyu/app/analysis/batch/BatchNotificationPresentationTest.kt`
 - 修改：`app/src/main/java/com/frameyu/app/analysis/batch/BatchAnalysisWorker.kt`
 
-- [ ] **步骤 1：编写 ETA 失败测试**
+- [x] **步骤 1：编写 ETA 失败测试**
 
 ```kotlin
 @Test
@@ -336,7 +336,7 @@ fun `不足三十项或三十秒不显示ETA且模式切换重置窗口`() {
 
 另测小时级和分钟级文案，不显示秒级伪精度。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.BatchNotificationPresentationTest'
@@ -344,7 +344,7 @@ fun `不足三十项或三十秒不显示ETA且模式切换重置窗口`() {
 
 预期：FAIL，缺少 estimator 和 presentation。
 
-- [ ] **步骤 3：实现单调时钟估算器和文案**
+- [x] **步骤 3：实现单调时钟估算器和文案**
 
 ```kotlin
 enum class AnalysisRunMode { FOREGROUND, BACKGROUND_FRIENDLY }
@@ -357,7 +357,7 @@ data class BatchNotificationText(
 
 `BatchEtaEstimator` 按当前模式保存窗口起点和 processed 基线；模式变化或 processed 回退时重置。`remainingMillis = remainingItems / itemsPerMillis`，结果只格式化为“约 N 分钟”或“约 N 小时”。
 
-- [ ] **步骤 4：接入 Worker**
+- [x] **步骤 4：接入 Worker**
 
 Worker 使用 `SystemClock.elapsedRealtime()`，每次通过现有 1 秒通知节流后读取 tracker 状态、更新 estimator，并生成：
 
@@ -367,7 +367,7 @@ Worker 使用 `SystemClock.elapsedRealtime()`，每次通过现有 1 秒通知�
 
 准备阶段和 ETA 样本不足时省略对应字段。
 
-- [ ] **步骤 5：运行通知与批次测试**
+- [x] **步骤 5：运行通知与批次测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.*' :app:compileDebugKotlin
@@ -375,7 +375,7 @@ Worker 使用 `SystemClock.elapsedRealtime()`，每次通过现有 1 秒通知�
 
 预期：PASS。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/analysis/batch/BatchNotificationPresentation.kt app/src/test/java/com/frameyu/app/analysis/batch/BatchNotificationPresentationTest.kt app/src/main/java/com/frameyu/app/analysis/batch/BatchAnalysisWorker.kt
@@ -394,7 +394,7 @@ git commit -m "feat(P1): 显示后台模式与批次预计耗时"
 - 修改：`app/src/main/java/com/frameyu/app/MainActivity.kt`
 - 修改：`app/src/main/AndroidManifest.xml`
 
-- [ ] **步骤 1：编写 Intent 解析失败测试**
+- [x] **步骤 1：编写 Intent 解析失败测试**
 
 `BatchAnalysisIntents` 的纯边界只接受正数批次 ID：
 
@@ -404,7 +404,7 @@ assertNull(validBatchId(0L))
 assertNull(validBatchId(-1L))
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.BatchAnalysisIntentsTest'
@@ -412,7 +412,7 @@ assertNull(validBatchId(-1L))
 
 预期：FAIL，缺少 Intent 边界。
 
-- [ ] **步骤 3：实现显式 Intent 与 Receiver**
+- [x] **步骤 3：实现显式 Intent 与 Receiver**
 
 ```kotlin
 class BatchAnalysisActionReceiver : BroadcastReceiver() {
@@ -438,7 +438,7 @@ class BatchAnalysisActionReceiver : BroadcastReceiver() {
 
 Manifest 注册 `android:exported="false"`。Pause Intent 显式指定 Receiver；Open Intent 显式指定 MainActivity。全部 PendingIntent 使用 `FLAG_UPDATE_CURRENT or FLAG_IMMUTABLE`。
 
-- [ ] **步骤 4：接入通知 action 与 Activity 路由**
+- [x] **步骤 4：接入通知 action 与 Activity 路由**
 
 通知增加：
 
@@ -450,7 +450,7 @@ Manifest 注册 `android:exported="false"`。Pause Intent 显式指定 Receiver�
 
 `MainActivity` 在 `onCreate` 和 `onNewIntent` 调用同一 `openBatchFromIntent(intent)`；有效批次 ID 写入 `selectedBatchId`，同时关闭 organizer/settings/candidate 状态。
 
-- [ ] **步骤 5：编写 Android 通知测试**
+- [x] **步骤 5：编写 Android 通知测试**
 
 通过 `ApplicationProvider` 调用 `BatchAnalysisNotificationFactory` 构造通知并断言两个 action 的标题和 PendingIntent 非空。创建一个 `QUEUED` 测试批次，显式发送暂停广播，条件轮询 Room 直到 `PAUSED`；无效批次 ID 不改变测试批次。
 
@@ -463,7 +463,7 @@ adb shell am instrument -w -e class com.frameyu.app.analysis.batch.BatchAnalysis
 
 预期：JVM PASS；仪器测试 `OK` 且 0 failures。
 
-- [ ] **步骤 7：Commit**
+- [x] **步骤 7：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/analysis/batch app/src/test/java/com/frameyu/app/analysis/batch app/src/androidTest/java/com/frameyu/app/analysis/batch app/src/main/java/com/frameyu/app/MainActivity.kt app/src/main/AndroidManifest.xml
@@ -480,7 +480,7 @@ git commit -m "feat(P1): 增加批次通知暂停与返回入口"
 - 修改：`app/src/main/java/com/frameyu/app/ui/analysis/BatchAnalysisScreen.kt`
 - 修改：`app/src/test/java/com/frameyu/app/ui/analysis/BatchAnalysisPresentationTest.kt`
 
-- [ ] **步骤 1：编写一张媒体多阶段失败测试**
+- [x] **步骤 1：编写一张媒体多阶段失败测试**
 
 DAO 测试为同一 `media_asset_id` 创建四个失败工作项，另一个媒体创建一个失败工作项，断言：
 
@@ -491,7 +491,7 @@ assertEquals(2L, progress.failedMediaCount)
 
 Presentation 测试断言 `failureCountLabel == "失败工作项：4（涉及 1 个媒体）"`。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.ui.analysis.BatchAnalysisPresentationTest' :app:compileDebugAndroidTestKotlin
@@ -499,7 +499,7 @@ Presentation 测试断言 `failureCountLabel == "失败工作项：4（涉及 1 
 
 预期：FAIL，查询结果和 UI state 尚无 `failedMediaCount`。
 
-- [ ] **步骤 3：实现 SQL 去重汇总**
+- [x] **步骤 3：实现 SQL 去重汇总**
 
 在 `observeBatch` SELECT 增加：
 
@@ -512,7 +512,7 @@ END) AS failed_media_count
 
 `AnalysisBatchWithProgress` 增加映射字段，不修改 Room schema，不升级数据库版本。
 
-- [ ] **步骤 4：更新 UI 文案**
+- [x] **步骤 4：更新 UI 文案**
 
 运行时页面显示：
 
@@ -538,7 +538,7 @@ adb shell am instrument -w -e class com.frameyu.app.data.db.BatchAnalysisDaoTest
 
 预期：PASS；DAO instrumentation `OK` 且 0 failures。
 
-- [ ] **步骤 6：Commit**
+- [x] **步骤 6：Commit**
 
 ```powershell
 git add app/src/main/java/com/frameyu/app/data/db/BatchAnalysisDao.kt app/src/main/java/com/frameyu/app/data/db/BatchAnalysisEntities.kt app/src/androidTest/java/com/frameyu/app/data/db/BatchAnalysisDaoTest.kt app/src/main/java/com/frameyu/app/ui/analysis app/src/test/java/com/frameyu/app/ui/analysis
@@ -551,7 +551,7 @@ git commit -m "fix(P1): 区分失败工作项与失败媒体"
 - 修改：`docs/mvp-foundation.md`
 - 修改：`docs/superpowers/plans/2026-08-11-background-batch-execution.md`
 
-- [ ] **步骤 1：运行完整 JVM、构建和差异检查**
+- [x] **步骤 1：运行完整 JVM、构建和差异检查**
 
 ```powershell
 ./gradlew.bat --offline --no-daemon '-Dkotlin.compiler.execution.strategy=in-process' :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --rerun-tasks
@@ -587,11 +587,11 @@ adb shell input keyevent KEYCODE_HOME
 
 通过通知“暂停”，确认批次状态为 `PAUSED` 且前台服务退出；划走 Activity 后重新打开，状态仍为暂停且完成数不归零。点击“继续”，确认同一批次 ID 从原 checkpoint 增长。
 
-- [ ] **步骤 6：记录损坏 PNG 诊断证据**
+- [x] **步骤 6：记录损坏 PNG 诊断证据**
 
 文档记录媒体 `1001180282`：`Pictures/Lark/1768878273557.png`、PNG 签名正确、1488×2105、459,827 字节、首个 `IDAT` CRC 错误；说明 4 个失败工作项来自同一损坏媒体，应用未改写原文件。
 
-- [ ] **步骤 7：更新文档并 Commit**
+- [x] **步骤 7：更新文档并 Commit**
 
 ```powershell
 git add docs/mvp-foundation.md docs/superpowers/plans/2026-08-11-background-batch-execution.md

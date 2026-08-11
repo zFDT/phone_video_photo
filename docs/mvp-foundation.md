@@ -20,6 +20,8 @@
 - 已完成可恢复视频分析任务：逐帧保存下一时间点、区间索引和累计进度；同 generation 的 `RUNNING` 恢复 Worker 可从 checkpoint 续跑，旧 generation 或终态 Worker 才会 no-op。
 - 已完成 Room v7 断点和执行代际持久化：视频任务、批次任务的状态与 checkpoint 均可在进程重建后恢复，旧执行代不能覆盖新状态。
 - 已完成 WorkManager 前台任务与串行调度：视频和批次任务使用唯一串行工作链，支持批量入队、暂停、继续、取消、失败重试和进程恢复；并发创建兼容批次保持幂等，不兼容分析器版本会退役旧批次并重建。
+- 已完成前后台一体化批量执行：应用进入后台后，图片批次在已提交工作项边界、长视频在已提交帧 checkpoint 后主动让出 CPU；返回前台后恢复正常速度，任务 ID、执行代际和 checkpoint 不发生切换。
+- 批次常驻通知会显示当前阶段、“正常速度 / 后台友好”和样本充足后的分钟级或小时级 ETA，并提供“暂停”和“打开帧遇”操作；通知打开可直接定位到对应批次。
 - 已接通扫描后的第一条用户流程：媒体库页面从 Room 展示视频列表，支持单个视频开始分析、重复任务保护和排队/运行/完成/失败状态显示。
 - 已接通候选帧浏览第一阶段：分析完成后可进入候选列表，按评分排序，从原视频时间点加载缩略预览并显示评分明细。
 - 已接通候选帧人工选择第一阶段：支持按评分/时间排序，并将选择状态持久化到 Room，后续导出可直接使用已选候选。
@@ -43,7 +45,7 @@
 - 已增加可取消的分块 SHA-256 完全重复检测和基于 MediaPipe 向量的相似媒体分组；长视频按 1 MB 分块检查取消，读取失败单独报告，不会误判为重复。
 - 已增加 50～200 GB 缓存容量策略和分析温控决策：通过 Android `PowerManager` 读取设备热状态，中高温度等待降温，临界温度将当前分析转为可恢复取消；缓存清理只生成计划不隐式删除。
 - 已接入设置持久化和设置页：缓存上限、演唱会模式、位置元数据复制、后台分析四项配置通过 SharedPreferences 保存。
-- 批次页面显示完整进度和失败总数，并提供暂停、继续、取消和失败重试；失败详情在 SQL 层固定 `LIMIT 100`，超限时明确显示“前 100 条 / 总数”。
+- 批次页面显示完整进度，并分别展示失败工作项总数和去重后的失败媒体数；页面提供暂停、继续、取消和失败重试，运行时明确说明可切换到其他应用，暂停后明确说明可退出并在下次打开时继续。失败详情在 SQL 层固定 `LIMIT 100`，超限时显示“前 100 条 / 总数”。
 - 分析器版本包含对应模型 SHA-256 和检测策略；`CONDITIONAL_DETECTION` 版本同时绑定分类模型、检测模型和策略，防止模型或策略变化后错误复用旧结果。
 
 ## 批量模型资产
@@ -80,12 +82,12 @@
 $env:JAVA_HOME='D:\Program Files\Android\Android Studio\jbr'
 $env:ANDROID_HOME='D:\flutter\sdk\android'
 $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
-./gradlew.bat --offline --no-daemon '-Dkotlin.compiler.execution.strategy=in-process' :app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin --rerun-tasks
+./gradlew.bat --offline :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --rerun-tasks --stacktrace
 ```
 
-结果为 `BUILD SUCCESSFUL`：66 个测试套件、433 个 JVM 测试，0 failure、0 error、0 skipped；`:app:assembleDebug` 与 `:app:compileDebugAndroidTestKotlin` 均通过。`git diff --check` 通过，提交前工作树范围检查仅包含本任务两份文档。
+结果为 `BUILD SUCCESSFUL`：71 个测试套件、476 个 JVM 测试，0 failure、0 error；74 个 Gradle 任务全部重新执行，`:app:assembleDebug` 与 `:app:assembleDebugAndroidTest` 均通过。`git diff --check` 通过。
 
-Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,516,592 字节，SHA-256 为 `DA71E4A819C85800808CAE3516C3A4A5C459AEFF0DEE6B956DA3DD587FD30729`；该生成物不提交。
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,565,784 字节，SHA-256 为 `AD25E9A0B552D74DE8CB8CD0AFC8B9DDAD5B390BE9269C485A3EB20B52BFDF48`；AndroidTest APK 大小为 1,139,313 字节，SHA-256 为 `AB15A33910B05D6F2179147382E6A0730788582113E681125FE9BF331D6191ED`。两个生成物均不提交，也不在测试后删除。
 
 当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
@@ -93,7 +95,7 @@ Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,
 
 断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro（`23117RK66C`，Android 16，HyperOS 构建 `OS3.0.304.0.WNMCNXM`）运行 Room 断点 instrumentation 测试并通过。
 
-任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest` 已成功通过；2026-08-11 已在 Redmi K70 Pro 验证批次前台服务和通知通道。后台限制和真实长视频解码性能仍需专项手动验证。
+任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest` 已成功通过；2026-08-11 已在 Redmi K70 Pro 验证批次前台服务和通知通道。后台友好节流、通知暂停/打开和失败媒体去重已完成代码与本地回归，仍需在目标 Redmi K70 Pro 上完成最终交互验收。
 
 真机安装验证：2026-08-11 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 覆盖安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片、视频和通知权限。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
 
@@ -101,11 +103,13 @@ Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,
 
 2026-08-11 已在 Redmi K70 Pro 上完成 54 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、媒体计数 Flow、视频断点恢复和取消边界；按 8 + 1 + 45 三组明确类清单运行，全部通过。真机测试后主包、测试包及运行时权限均保留。
 
-同日创建批次 #1：10,293 个媒体生成 37,012 个工作项。已验证暂停、继续、覆盖安装、强制停止进程和重新启动后的自动续跑；批次保持同一 ID 和 checkpoint，当前安全暂停在 2,746/37,012，失败 0。前台通知进度增加 1 秒节流，12 秒观测窗口内 `ACTION_NOTIFY` 从 126 次降至 15 次；运行时设备温度 34.5°C，进程 PSS 约 393 MB。
+同日创建批次 #1：10,293 个媒体生成 37,012 个工作项。已验证暂停、继续、覆盖安装、强制停止进程和重新启动后的自动续跑；批次保持同一 ID 和 checkpoint。前台通知进度增加 1 秒节流，12 秒观测窗口内 `ACTION_NOTIFY` 从 126 次降至 15 次；运行时设备温度 34.5°C，进程 PSS 约 393 MB。本轮未连接目标设备，未重新读取该批次的当前完成数。
+
+解码失败诊断已定位到媒体 ID `1001180282`，路径为 `Pictures/Lark/1768878273557.png`。文件 PNG 签名正确，尺寸 1488×2105、大小 459,827 字节，但首个 `IDAT` 数据块 CRC 校验错误；独立解码器同样报告损坏，因此不是权限、模型或 Android 解码配置问题。质量、分类、向量和条件检测四个阶段各产生一个失败工作项，实际只涉及这一张损坏图片。应用按永久失败隔离并保留原文件，不自动转码、覆盖或删除；新页面会显示“失败工作项：4（涉及 1 个媒体）”。
 
 本次批量模型管线尚未执行以下 Redmi K70 Pro 手动验收：
 
-- 1 万级媒体批量分析已完成中断恢复验证；仍需跑到终态并验证真实失败重试。
+- 1 万级媒体批量分析已完成中断恢复验证；仍需跑到终态并验证真实失败重试、后台持续增长、通知暂停和通知返回批次页。
 - 演唱会长视频的性能、温控、取消与断点恢复。
 - Android R+ 系统回收站授权及 Activity 重建对账。
 - HyperOS 动态照片兼容性。
@@ -131,3 +135,4 @@ adb shell am instrument -w -r com.frameyu.app.test/androidx.test.runner.AndroidJ
 - `75b9a6c fix(P0): 加固批次版本与阶段依赖`：补齐并发幂等、四阶段版本矩阵和分类到条件检测依赖。
 - `542dfb9 feat(P1): 增加批量分析和整理确认页面` 及后续任务 9 修复：接入批次页面、统一整理、失败详情限流和安全删除授权。
 - `e1a59ed fix(P0): 终结重复扫描流与授权过期锁`：完成可取消散列和授权过期对账的最终质量门禁。
+- `d334e2a` 至 `d2e8e32`：完成应用可见性跟踪、图片/视频后台节流、通知运行模式与 ETA、通知暂停/打开，以及失败工作项和失败媒体去重展示。
