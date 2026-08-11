@@ -3,6 +3,8 @@ package com.frameyu.app.system
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 enum class AppVisibility {
@@ -11,6 +13,8 @@ enum class AppVisibility {
 }
 
 class AppVisibilityState {
+    private val lock = Any()
+    private val startedTokens = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private val started = AtomicInteger(0)
 
     val startedActivityCount: Int
@@ -23,12 +27,20 @@ class AppVisibilityState {
             AppVisibility.BACKGROUND
         }
 
-    fun onActivityStarted() {
-        started.incrementAndGet()
+    fun onActivityStarted(token: Any) {
+        synchronized(lock) {
+            if (startedTokens.add(token)) {
+                started.incrementAndGet()
+            }
+        }
     }
 
-    fun onActivityStopped() {
-        started.updateAndGet { count -> (count - 1).coerceAtLeast(0) }
+    fun onActivityStopped(token: Any) {
+        synchronized(lock) {
+            if (startedTokens.remove(token)) {
+                started.decrementAndGet()
+            }
+        }
     }
 }
 
@@ -41,7 +53,7 @@ class ProcessAppVisibilityTracker(
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
 
     override fun onActivityStarted(activity: Activity) {
-        state.onActivityStarted()
+        state.onActivityStarted(activity)
     }
 
     override fun onActivityResumed(activity: Activity) = Unit
@@ -49,7 +61,7 @@ class ProcessAppVisibilityTracker(
     override fun onActivityPaused(activity: Activity) = Unit
 
     override fun onActivityStopped(activity: Activity) {
-        state.onActivityStopped()
+        state.onActivityStopped(activity)
     }
 
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
