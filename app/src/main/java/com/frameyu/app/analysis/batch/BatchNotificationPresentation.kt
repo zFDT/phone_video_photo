@@ -133,10 +133,8 @@ internal class BatchNotificationEmissionCoordinator(
         progress.toNotificationText(mode, etaMillis)
     },
 ) {
-    fun initialNotification(progress: BatchAnalysisProgress): BatchNotificationText {
-        val mode = visibilityProvider().toAnalysisRunMode()
-        return presentation(progress, mode, null)
-    }
+    fun initialNotification(progress: BatchAnalysisProgress): BatchNotificationText =
+        presentation(progress, AnalysisRunMode.FOREGROUND, null)
 
     fun notificationFor(progress: BatchAnalysisProgress): BatchNotificationText? {
         if (!shouldEmit(progress)) return null

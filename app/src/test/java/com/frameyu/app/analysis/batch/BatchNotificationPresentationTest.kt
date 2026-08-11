@@ -170,7 +170,7 @@ class BatchNotificationPresentationTest {
     fun `初始通知不读取时钟或估算器且不显示预计耗时`() {
         val coordinator = BatchNotificationEmissionCoordinator(
             shouldEmit = { error("初始通知不应检查进度发布 gate") },
-            visibilityProvider = { AppVisibility.FOREGROUND },
+            visibilityProvider = { error("初始通知不应读取 visibility") },
             nowMillis = { error("初始通知不应读取单调时钟") },
             recordEta = { _, _, _, _ -> error("初始通知不应记录 ETA") },
         )
