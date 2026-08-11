@@ -36,6 +36,8 @@ import com.frameyu.app.sampling.VideoAnalysisWorkerRunner
 import com.frameyu.app.settings.SettingsStore
 import com.frameyu.app.storage.FeatureCache
 import com.frameyu.app.system.AndroidThermalStatusProvider
+import com.frameyu.app.system.BackgroundPacingPolicy
+import com.frameyu.app.system.ProcessAppVisibilityTracker
 import com.frameyu.app.vision.MediaImageDecoder
 import com.frameyu.app.vision.DefaultFrameModelAnalyzer
 import com.frameyu.app.vision.FrameModelAnalyzer
@@ -53,6 +55,10 @@ import kotlinx.coroutines.launch
 
 class FrameYuApplication : Application(), Configuration.Provider {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    val appVisibilityTracker = ProcessAppVisibilityTracker()
+
+    val backgroundPacingPolicy = BackgroundPacingPolicy()
 
     lateinit var database: FrameYuDatabase
         private set
@@ -201,6 +207,7 @@ class FrameYuApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        registerActivityLifecycleCallbacks(appVisibilityTracker)
         createVideoAnalysisNotificationChannel()
         createBatchAnalysisNotificationChannel()
         database = Room.databaseBuilder(this, FrameYuDatabase::class.java, "frameyu.db")
