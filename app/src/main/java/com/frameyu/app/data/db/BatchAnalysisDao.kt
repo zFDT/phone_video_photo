@@ -659,7 +659,11 @@ abstract class BatchAnalysisDao {
                    WHEN w.status IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED') THEN 1
                    ELSE 0
                END), 0)
-                   AS failed_work_items
+                   AS failed_work_items,
+               COUNT(DISTINCT CASE
+                   WHEN w.status IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')
+                   THEN w.media_asset_id
+               END) AS failed_media_count
         FROM analysis_batches AS b
         LEFT JOIN analysis_work_items AS w ON w.batch_id = b.id
         WHERE b.id = :batchId

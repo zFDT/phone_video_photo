@@ -33,6 +33,10 @@ class BatchAnalysisPresentationTest {
         assertFalse(state.actions.canResume)
         assertFalse(state.actions.canRetryFailures)
         assertFalse(state.actions.canOpenOrganizer)
+        assertEquals(
+            "可以切换到其他应用，分析会通过通知继续运行；后台时会自动降低速度。",
+            state.statusDescription,
+        )
     }
 
     @Test
@@ -48,11 +52,33 @@ class BatchAnalysisPresentationTest {
         assertTrue(paused.actions.canResume)
         assertTrue(paused.actions.canCancel)
         assertFalse(paused.actions.canPause)
+        assertEquals(
+            "已保存当前进度。退出帧遇后仍会保持暂停，下次打开可继续。",
+            paused.statusDescription,
+        )
         assertTrue(attention.actions.canRetryFailures)
         assertTrue(attention.actions.canCancel)
         assertEquals("质量评分", attention.currentStageLabel)
         assertTrue(completed.actions.canOpenOrganizer)
         assertFalse(completed.actions.canCancel)
+        assertEquals(null, completed.statusDescription)
+    }
+
+    @Test
+    fun `失败统计区分工作项与媒体数量`() {
+        val state = batchAnalysisUiState(
+            batchId = 1L,
+            progress = progress(
+                status = "NEEDS_ATTENTION",
+                total = 4L,
+                failed = 4L,
+                failedMediaCount = 1L,
+            ),
+            currentStage = null,
+        )
+
+        assertEquals(1L, state.failedMediaCount)
+        assertEquals("失败工作项：4（涉及 1 个媒体）", state.failureCountLabel)
     }
 
     @Test
@@ -188,6 +214,7 @@ class BatchAnalysisPresentationTest {
         total: Long = 4L,
         completed: Long = 0L,
         failed: Long = 0L,
+        failedMediaCount: Long = failed,
     ) = AnalysisBatchWithProgress(
         batch = AnalysisBatchEntity(
             id = 1L,
@@ -200,5 +227,6 @@ class BatchAnalysisPresentationTest {
         runningWorkItems = if (status == "RUNNING") 1L else 0L,
         pendingWorkItems = (total - completed - failed).coerceAtLeast(0L),
         failedWorkItems = failed,
+        failedMediaCount = failedMediaCount,
     )
 }

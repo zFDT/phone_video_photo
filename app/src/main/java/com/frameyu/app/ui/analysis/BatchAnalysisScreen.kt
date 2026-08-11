@@ -102,8 +102,11 @@ fun BatchAnalysisScreen(
             Spacer(modifier = Modifier.height(12.dp))
             Text(text = "总工作项：${state.total}")
             Text(text = "已完成：${state.completed}")
-            Text(text = "失败：${state.failed}")
+            Text(text = state.failureCountLabel)
             Text(text = "当前阶段：${state.currentStageLabel}")
+            state.statusDescription?.let { description ->
+                Text(text = description)
+            }
             Text(
                 text = "总体进度：${(state.progressFraction * 100).toInt()}%",
                 style = MaterialTheme.typography.bodyMedium,

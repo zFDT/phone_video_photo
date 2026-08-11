@@ -234,4 +234,6 @@ data class AnalysisBatchWithProgress(
     val pendingWorkItems: Long,
     @ColumnInfo(name = "failed_work_items")
     val failedWorkItems: Long,
+    @ColumnInfo(name = "failed_media_count")
+    val failedMediaCount: Long,
 )

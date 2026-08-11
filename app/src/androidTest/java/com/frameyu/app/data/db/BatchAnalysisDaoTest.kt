@@ -182,6 +182,35 @@ class BatchAnalysisDaoTest {
     }
 
     @Test
+    fun observeBatchCountsFailedWorkItemsAndDistinctFailedMedia() = runBlocking {
+        val database = createDatabase()
+        try {
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L), media(3L)))
+            val dao = database.batchAnalysisDao()
+            val batchId = dao.createBatch(
+                batch = batch(),
+                items = listOf(
+                    workItem(0L, 1L, "QUALITY", status = "RETRYABLE_FAILED"),
+                    workItem(0L, 1L, "CLASSIFICATION", status = "PERMANENT_FAILED"),
+                    workItem(0L, 1L, "EMBEDDING", status = "RETRYABLE_FAILED"),
+                    workItem(0L, 1L, "CONDITIONAL_DETECTION", status = "PERMANENT_FAILED"),
+                    workItem(0L, 2L, "QUALITY", status = "PERMANENT_FAILED"),
+                    workItem(0L, 3L, "QUALITY", status = "COMPLETED"),
+                ),
+            )
+
+            val progress = dao.observeBatch(batchId).first()
+            assertEquals(5L, progress.failedWorkItems)
+            assertEquals(2L, progress.failedMediaCount)
+
+            val emptyBatchId = dao.createBatch(batch(), emptyList())
+            assertEquals(0L, dao.observeBatch(emptyBatchId).first().failedMediaCount)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun batchWorkItemsSupportCheckpointRetryAndProgress() = runBlocking {
         val database = createDatabase()
         try {

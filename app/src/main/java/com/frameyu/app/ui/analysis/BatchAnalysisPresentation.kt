@@ -20,6 +20,9 @@ data class BatchAnalysisUiState(
     val total: Long,
     val completed: Long,
     val failed: Long,
+    val failedMediaCount: Long,
+    val failureCountLabel: String,
+    val statusDescription: String?,
     val currentStageLabel: String,
     val progressFraction: Float,
     val failureItems: List<BatchFailureUiItem>,
@@ -58,6 +61,16 @@ fun batchAnalysisUiState(
         total = progress.totalWorkItems,
         completed = progress.completedWorkItems,
         failed = progress.failedWorkItems,
+        failedMediaCount = progress.failedMediaCount,
+        failureCountLabel =
+            "失败工作项：${progress.failedWorkItems}（涉及 ${progress.failedMediaCount} 个媒体）",
+        statusDescription = when (status) {
+            "QUEUED", "RUNNING" ->
+                "可以切换到其他应用，分析会通过通知继续运行；后台时会自动降低速度。"
+            "PAUSED" ->
+                "已保存当前进度。退出帧遇后仍会保持暂停，下次打开可继续。"
+            else -> null
+        },
         currentStageLabel = if (currentStage == null && failedItems.isNotEmpty()) {
             "无正在执行阶段"
         } else {
