@@ -120,6 +120,51 @@ fun presentBatchNotification(
     )
 }
 
+internal class BatchNotificationEmissionCoordinator(
+    private val shouldEmit: (BatchAnalysisProgress) -> Boolean,
+    private val visibilityProvider: () -> AppVisibility,
+    private val nowMillis: () -> Long,
+    private val recordEta: (Int, Int, AnalysisRunMode, Long) -> Long?,
+    private val presentation: (
+        BatchAnalysisProgress,
+        AnalysisRunMode,
+        Long?,
+    ) -> BatchNotificationText = { progress, mode, etaMillis ->
+        progress.toNotificationText(mode, etaMillis)
+    },
+) {
+    fun initialNotification(progress: BatchAnalysisProgress): BatchNotificationText {
+        val mode = visibilityProvider().toAnalysisRunMode()
+        return presentation(progress, mode, null)
+    }
+
+    fun notificationFor(progress: BatchAnalysisProgress): BatchNotificationText? {
+        if (!shouldEmit(progress)) return null
+
+        val mode = visibilityProvider().toAnalysisRunMode()
+        val now = nowMillis()
+        val etaMillis = recordEta(progress.processed, progress.total, mode, now)
+        return presentation(progress, mode, etaMillis)
+    }
+}
+
+internal val BatchAnalysisProgress.processed: Int
+    get() = (completed.toLong() + failed.toLong())
+        .coerceIn(0L, Int.MAX_VALUE.toLong())
+        .toInt()
+
+private fun BatchAnalysisProgress.toNotificationText(
+    mode: AnalysisRunMode,
+    etaMillis: Long?,
+): BatchNotificationText = presentBatchNotification(
+    stage = currentStage,
+    mode = mode,
+    processed = processed,
+    total = total,
+    failed = failed,
+    etaMillis = etaMillis,
+)
+
 fun AppVisibility.toAnalysisRunMode(): AnalysisRunMode = when (this) {
     AppVisibility.FOREGROUND -> AnalysisRunMode.FOREGROUND
     AppVisibility.BACKGROUND -> AnalysisRunMode.BACKGROUND_FRIENDLY

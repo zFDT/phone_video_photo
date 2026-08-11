@@ -677,39 +677,37 @@ class BatchAnalysisWorker(
             nowMillis = SystemClock::elapsedRealtime,
         )
         val etaEstimator = BatchEtaEstimator()
+        val notificationCoordinator = BatchNotificationEmissionCoordinator(
+            shouldEmit = progressEmissionPolicy::shouldEmit,
+            visibilityProvider = {
+                (applicationContext as FrameYuApplication).appVisibilityTracker.visibility
+            },
+            nowMillis = SystemClock::elapsedRealtime,
+            recordEta = etaEstimator::record,
+        )
         return when (
             val outcome = execution.execute(
                 batchId = batchId,
                 executionGeneration = executionGeneration,
                 runAttemptCount = runAttemptCount,
                 onClaimed = {
-                    val mode = currentRunMode()
+                    val progress = BatchAnalysisProgress(0, 0, 0, "", -1L)
                     setForeground(
                         createForegroundInfo(
                             batchId,
-                            BatchAnalysisProgress(0, 0, 0, "", -1L),
-                            mode,
-                            etaMillis = null,
+                            progress,
+                            notificationCoordinator.initialNotification(progress),
                         ),
                     )
                 },
                 onProgress = { progress ->
-                    if (progressEmissionPolicy.shouldEmit(progress)) {
-                        val mode = currentRunMode()
-                        val processed = progress.processed
-                        val etaMillis = etaEstimator.record(
-                            processed = processed,
-                            total = progress.total,
-                            mode = mode,
-                            nowMillis = SystemClock.elapsedRealtime(),
-                        )
+                    notificationCoordinator.notificationFor(progress)?.let { text ->
                         setProgress(progress.toData())
                         setForeground(
                             createForegroundInfo(
                                 batchId = batchId,
                                 progress = progress,
-                                mode = mode,
-                                etaMillis = etaMillis,
+                                text = text,
                             ),
                         )
                     }
@@ -724,18 +722,9 @@ class BatchAnalysisWorker(
     private fun createForegroundInfo(
         batchId: Long,
         progress: BatchAnalysisProgress,
-        mode: AnalysisRunMode,
-        etaMillis: Long?,
+        text: BatchNotificationText,
     ): ForegroundInfo {
         val processed = progress.processed
-        val text = presentBatchNotification(
-            stage = progress.currentStage,
-            mode = mode,
-            processed = processed,
-            total = progress.total,
-            failed = progress.failed,
-            etaMillis = etaMillis,
-        )
         return ForegroundInfo(
             notificationId(batchId),
             NotificationCompat.Builder(applicationContext, CHANNEL_ID)
@@ -752,12 +741,6 @@ class BatchAnalysisWorker(
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
     }
-
-    private fun currentRunMode(): AnalysisRunMode =
-        (applicationContext as FrameYuApplication)
-            .appVisibilityTracker
-            .visibility
-            .toAnalysisRunMode()
 
     companion object {
         private const val PROGRESS_EMISSION_INTERVAL_MILLIS = 1_000L
@@ -780,11 +763,6 @@ class BatchAnalysisWorker(
         }
     }
 }
-
-private val BatchAnalysisProgress.processed: Int
-    get() = (completed.toLong() + failed.toLong())
-        .coerceIn(0L, Int.MAX_VALUE.toLong())
-        .toInt()
 
 class BatchAnalysisWorkerFactory(
     private val runnerProvider: () -> BatchAnalysisRunner,

@@ -88,6 +88,33 @@ class BatchNotificationPresentationTest {
     }
 
     @Test
+    fun `剩余项为负数时不返回预计耗时`() {
+        val estimator = BatchEtaEstimator(minSamples = 30, minWindowMillis = 30_000L)
+        estimator.record(0, 29, AnalysisRunMode.FOREGROUND, 0L)
+
+        assertNull(estimator.record(30, 29, AnalysisRunMode.FOREGROUND, 30_000L))
+    }
+
+    @Test
+    fun `处理增量为零时不执行除法`() {
+        val estimator = BatchEtaEstimator(minSamples = 1, minWindowMillis = 30_000L)
+        estimator.record(30, 100, AnalysisRunMode.FOREGROUND, 0L)
+
+        assertNull(estimator.record(30, 100, AnalysisRunMode.FOREGROUND, 30_000L))
+    }
+
+    @Test
+    fun `极值预计耗时饱和为Long最大值`() {
+        val estimator = BatchEtaEstimator(minSamples = 30, minWindowMillis = 30_000L)
+        estimator.record(0, Int.MAX_VALUE, AnalysisRunMode.FOREGROUND, 0L)
+
+        assertEquals(
+            Long.MAX_VALUE,
+            estimator.record(30, Int.MAX_VALUE, AnalysisRunMode.FOREGROUND, Long.MAX_VALUE),
+        )
+    }
+
+    @Test
     fun `预计耗时仅显示向上取整的分钟或小时`() {
         val oneMinute = presentBatchNotification(
             stage = AnalysisStage.EMBEDDING.name,
@@ -138,4 +165,109 @@ class BatchNotificationPresentationTest {
             AppVisibility.BACKGROUND.toAnalysisRunMode(),
         )
     }
+
+    @Test
+    fun `初始通知不读取时钟或估算器且不显示预计耗时`() {
+        val coordinator = BatchNotificationEmissionCoordinator(
+            shouldEmit = { error("初始通知不应检查进度发布 gate") },
+            visibilityProvider = { AppVisibility.FOREGROUND },
+            nowMillis = { error("初始通知不应读取单调时钟") },
+            recordEta = { _, _, _, _ -> error("初始通知不应记录 ETA") },
+        )
+
+        val text = coordinator.initialNotification(
+            progress(completed = 0, total = 0, stage = ""),
+        )
+
+        assertEquals("正常速度：0/0 · 失败 0", text.content)
+        assertFalse(text.content.contains("约"))
+    }
+
+    @Test
+    fun `未通过发布gate时不读取可见性时钟或估算器`() {
+        val calls = mutableListOf<String>()
+        val coordinator = BatchNotificationEmissionCoordinator(
+            shouldEmit = {
+                calls += "gate"
+                false
+            },
+            visibilityProvider = { error("gate 未通过时不应读取 visibility") },
+            nowMillis = { error("gate 未通过时不应读取单调时钟") },
+            recordEta = { _, _, _, _ -> error("gate 未通过时不应记录 ETA") },
+            presentation = { _, _, _ -> error("gate 未通过时不应生成通知") },
+        )
+
+        val text = coordinator.notificationFor(progress(completed = 1))
+
+        assertNull(text)
+        assertEquals(listOf("gate"), calls)
+    }
+
+    @Test
+    fun `通过发布gate后按顺序采样并生成通知`() {
+        val calls = mutableListOf<String>()
+        val coordinator = BatchNotificationEmissionCoordinator(
+            shouldEmit = {
+                calls += "gate"
+                true
+            },
+            visibilityProvider = {
+                calls += "visibility"
+                AppVisibility.BACKGROUND
+            },
+            nowMillis = {
+                calls += "clock"
+                30_000L
+            },
+            recordEta = { processed, total, mode, nowMillis ->
+                calls += "estimator"
+                assertEquals(31, processed)
+                assertEquals(100, total)
+                assertEquals(AnalysisRunMode.BACKGROUND_FRIENDLY, mode)
+                assertEquals(30_000L, nowMillis)
+                61L * 60_000L
+            },
+            presentation = { sampledProgress, mode, etaMillis ->
+                calls += "presentation"
+                presentBatchNotification(
+                    stage = sampledProgress.currentStage,
+                    mode = mode,
+                    processed = sampledProgress.completed + sampledProgress.failed,
+                    total = sampledProgress.total,
+                    failed = sampledProgress.failed,
+                    etaMillis = etaMillis,
+                )
+            },
+        )
+
+        val text = coordinator.notificationFor(
+            progress(
+                completed = 30,
+                failed = 1,
+                stage = AnalysisStage.CLASSIFICATION.name,
+            ),
+        )
+
+        assertEquals(
+            listOf("gate", "visibility", "clock", "estimator", "presentation"),
+            calls,
+        )
+        assertEquals(
+            "图片分类 · 后台友好：31/100 · 失败 1 · 约 2 小时",
+            text?.content,
+        )
+    }
+
+    private fun progress(
+        completed: Int,
+        failed: Int = 0,
+        total: Int = 100,
+        stage: String = AnalysisStage.EMBEDDING.name,
+    ) = BatchAnalysisProgress(
+        completed = completed,
+        failed = failed,
+        total = total,
+        currentStage = stage,
+        currentMediaId = 1L,
+    )
 }
