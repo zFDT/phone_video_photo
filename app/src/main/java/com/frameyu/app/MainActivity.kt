@@ -294,7 +294,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openBatchFromIntent(intent: Intent?) {
-        val batchId = intent?.let(BatchAnalysisIntents::openBatchId) ?: return
+        val batchId = intent?.let(BatchAnalysisIntents::consumeOpenBatchId) ?: return
         selectedBatchId.value = batchId
         showOrganizer.value = false
         showSettings.value = false

@@ -18,6 +18,7 @@ import kotlinx.coroutines.channels.Channel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -85,6 +86,14 @@ class BatchAnalysisNotificationTest {
             0,
         )
         assertTrue(!receiverInfo.exported)
+    }
+
+    @Test
+    fun openBatchIntentIsConsumedOnlyOnce() {
+        val intent = BatchAnalysisIntents.openIntent(context, 42L)
+
+        assertEquals(42L, BatchAnalysisIntents.consumeOpenBatchId(intent))
+        assertNull(BatchAnalysisIntents.consumeOpenBatchId(intent))
     }
 
     @Test

@@ -20,6 +20,12 @@ object BatchAnalysisIntents {
         batchId = intent.getLongExtra(EXTRA_BATCH_ID, -1L),
     )
 
+    fun consumeOpenBatchId(intent: Intent): Long? = openBatchId(intent)?.also {
+        intent.action = null
+        intent.data = null
+        intent.removeExtra(EXTRA_BATCH_ID)
+    }
+
     fun pauseBatchId(intent: Intent): Long? = pauseBatchId(
         action = intent.action,
         batchId = intent.getLongExtra(EXTRA_BATCH_ID, -1L),
