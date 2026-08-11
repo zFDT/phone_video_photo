@@ -97,6 +97,28 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
+    fun `afterCheckpoint执行时Room已持久化下一帧断点`() = runBlocking {
+        seed(durationMillis = 2_000L)
+        val committedProgress = mutableListOf<Pair<Long, Long>>()
+
+        val result = runner(
+            analyzerProvider = { analyzer { frameResult() } },
+            frameStore = store,
+            source = RecordingFrameSource(),
+            afterCheckpoint = {
+                val task = database.analysisTaskDao().getTaskProgress(TASK_ID)!!
+                committedProgress += task.sampledFrameCount to task.currentTimestampMillis
+            },
+        ).run(TASK_ID) { }
+
+        assertTrue(result is VideoAnalysisTaskResult.Completed)
+        assertEquals(
+            listOf(1L to 1_000L, 2L to 2_000L),
+            committedProgress,
+        )
+    }
+
+    @Test
     fun `模型结果持久化异常不会推进checkpoint`() = runBlocking {
         seed(durationMillis = 1L)
         val failingCache = FeatureCache(
@@ -356,8 +378,14 @@ class RoomVideoAnalysisWorkerRunnerTest {
         seed(durationMillis = 3_000L, task = task(executionGeneration = 5L))
         val source = RecordingFrameSource()
         val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
+        var paceCount = 0
 
-        val result = runner(analyzer { frameResult() }, store, source)
+        val result = runner(
+            analyzerProvider = { analyzer { frameResult() } },
+            frameStore = store,
+            source = source,
+            afterCheckpoint = { paceCount++ },
+        )
             .run(TASK_ID, 5L) { progress ->
                 if (progress.sampledFrameCount == 1L) {
                     lifecycleStore.cancel(TASK_ID)
@@ -371,6 +399,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         assertEquals(6L, task.executionGeneration)
         assertEquals(1L, task.sampledFrameCount)
         assertEquals(1_000L, task.currentTimestampMillis)
+        assertEquals(0, paceCount)
     }
 
     @Test
@@ -455,6 +484,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
         thermalPollIntervalMillis: Long = 5_000L,
         nowMillis: () -> Long = { 99L },
+        afterCheckpoint: suspend () -> Unit = {},
     ) = RoomVideoAnalysisWorkerRunner(
         context = context,
         database = database,
@@ -464,6 +494,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
         thermalStatusProvider = thermalStatusProvider,
         thermalPollIntervalMillis = thermalPollIntervalMillis,
         frameSourceProvider = { source },
+        afterCheckpoint = afterCheckpoint,
     )
 
     private suspend fun assertCancelledWithoutProgress(source: RecordingFrameSource) {

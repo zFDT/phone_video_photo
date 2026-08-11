@@ -8,6 +8,51 @@ import org.junit.Test
 
 class VideoAnalysisTaskTest {
     @Test
+    fun `每帧按frame save progress pace固定顺序执行`() = runBlocking {
+        val events = mutableListOf<String>()
+
+        val result = VideoAnalysisTask(
+            SamplingCheckpointStore { events += "save" },
+        ).run(
+            plan = SamplingPlan.create(2_000L),
+            onProgress = { events += "progress" },
+            onCheckpointCommitted = { events += "pace" },
+        ) {
+            events += "frame"
+        }
+
+        assertTrue(result is VideoAnalysisTaskResult.Completed)
+        assertEquals(
+            listOf(
+                "frame", "save", "progress", "pace",
+                "frame", "save", "progress", "pace",
+            ),
+            events,
+        )
+    }
+
+    @Test
+    fun `checkpoint提交后pace取消原样传播且不回滚断点`() {
+        val saved = mutableListOf<VideoAnalysisProgress>()
+        val cancellation = CancellationException("pace cancelled")
+
+        val actual = assertThrows<CancellationException> {
+            runBlocking {
+                VideoAnalysisTask(
+                    SamplingCheckpointStore { saved += it },
+                ).run(
+                    plan = SamplingPlan.create(1L),
+                    onCheckpointCommitted = { throw cancellation },
+                ) { }
+            }
+        }
+
+        assertTrue(actual === cancellation)
+        assertEquals(1L, saved.single().sampledFrameCount)
+        assertEquals(1L, saved.single().nextTimestampMillis)
+    }
+
+    @Test
     fun `逐帧保存进度并完成全部区间`() = runBlocking {
         val saved = mutableListOf<VideoAnalysisProgress>()
         val plan = SamplingPlan.create(2_000L, listOf(SampleRange(1_000L, 2_000L, 10.0, SamplingTier.FOCUSED)))

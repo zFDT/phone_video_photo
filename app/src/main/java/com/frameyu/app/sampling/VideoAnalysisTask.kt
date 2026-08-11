@@ -35,6 +35,7 @@ class VideoAnalysisTask(
         checkpoint: SamplingCheckpoint? = null,
         onProgress: suspend (VideoAnalysisProgress) -> Unit = {},
         shouldContinue: suspend () -> Boolean = { true },
+        onCheckpointCommitted: suspend (VideoAnalysisProgress) -> Unit = {},
         onTimestamp: suspend (Long) -> Unit,
     ): VideoAnalysisTaskResult {
         var rangeIndex = checkpoint?.rangeIndex ?: 0
@@ -75,6 +76,7 @@ class VideoAnalysisTask(
                     val progress = VideoAnalysisProgress(planId, rangeIndex, nextTimestamp, sampledCount, totalSampleCount)
                     checkpointStore.save(progress)
                     onProgress(progress)
+                    onCheckpointCommitted(progress)
                 }
                 rangeIndex++
                 if (rangeIndex < plan.ranges.size) nextTimestamp = plan.ranges[rangeIndex].startMillis

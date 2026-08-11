@@ -239,6 +239,13 @@ class FrameYuApplication : Application(), Configuration.Provider {
             frameModelStoreProvider = { videoFrameModelStore },
             concertModeEnabledProvider = { settingsStore.read().concertModeEnabled },
             thermalStatusProvider = AndroidThermalStatusProvider(this)::current,
+            afterCheckpoint = {
+                val delayMillis = backgroundPacingPolicy.delayAfter(
+                    visibility = appVisibilityTracker.visibility,
+                    isHeavyUnit = true,
+                )
+                if (delayMillis > 0L) delay(delayMillis)
+            },
         )
         videoAnalysisWorkScheduler = VideoAnalysisWorkScheduler.from(
             this,

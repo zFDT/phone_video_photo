@@ -59,6 +59,7 @@ class RoomVideoAnalysisWorkerRunner(
     private val frameSourceProvider: () -> VideoFrameSource = {
         MediaMetadataRetrieverFrameSource()
     },
+    private val afterCheckpoint: suspend () -> Unit = {},
 ) : VideoAnalysisWorkerRunner {
     override suspend fun run(
         taskId: Long,
@@ -174,6 +175,16 @@ class RoomVideoAnalysisWorkerRunner(
                         control.status == AnalysisTask.Status.RUNNING.name &&
                             control.executionGeneration == execution.executionGeneration
                     } == true
+                },
+                onCheckpointCommitted = {
+                    val control = lifecycleStore.controlState(taskId)
+                    if (
+                        control?.status != AnalysisTask.Status.RUNNING.name ||
+                        control.executionGeneration != execution.executionGeneration
+                    ) {
+                        throw VideoAnalysisControlChangedException()
+                    }
+                    afterCheckpoint()
                 },
             ) { timestampMillis ->
                 prewarmTimestampMillis?.let { prewarmTimestamp ->
