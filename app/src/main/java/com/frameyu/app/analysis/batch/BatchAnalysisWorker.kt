@@ -676,23 +676,42 @@ class BatchAnalysisWorker(
             minIntervalMillis = PROGRESS_EMISSION_INTERVAL_MILLIS,
             nowMillis = SystemClock::elapsedRealtime,
         )
+        val etaEstimator = BatchEtaEstimator()
         return when (
             val outcome = execution.execute(
                 batchId = batchId,
                 executionGeneration = executionGeneration,
                 runAttemptCount = runAttemptCount,
                 onClaimed = {
+                    val mode = currentRunMode()
                     setForeground(
                         createForegroundInfo(
                             batchId,
                             BatchAnalysisProgress(0, 0, 0, "", -1L),
+                            mode,
+                            etaMillis = null,
                         ),
                     )
                 },
                 onProgress = { progress ->
                     if (progressEmissionPolicy.shouldEmit(progress)) {
+                        val mode = currentRunMode()
+                        val processed = progress.processed
+                        val etaMillis = etaEstimator.record(
+                            processed = processed,
+                            total = progress.total,
+                            mode = mode,
+                            nowMillis = SystemClock.elapsedRealtime(),
+                        )
                         setProgress(progress.toData())
-                        setForeground(createForegroundInfo(batchId, progress))
+                        setForeground(
+                            createForegroundInfo(
+                                batchId = batchId,
+                                progress = progress,
+                                mode = mode,
+                                etaMillis = etaMillis,
+                            ),
+                        )
                     }
                 },
             )
@@ -705,20 +724,24 @@ class BatchAnalysisWorker(
     private fun createForegroundInfo(
         batchId: Long,
         progress: BatchAnalysisProgress,
+        mode: AnalysisRunMode,
+        etaMillis: Long?,
     ): ForegroundInfo {
-        val processed = progress.completed + progress.failed
-        val stage = progress.currentStage.ifBlank { "准备中" }
-        val media = if (progress.currentMediaId > 0L) {
-            "，媒体 ${progress.currentMediaId}"
-        } else {
-            ""
-        }
+        val processed = progress.processed
+        val text = presentBatchNotification(
+            stage = progress.currentStage,
+            mode = mode,
+            processed = processed,
+            total = progress.total,
+            failed = progress.failed,
+            etaMillis = etaMillis,
+        )
         return ForegroundInfo(
             notificationId(batchId),
             NotificationCompat.Builder(applicationContext, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("帧遇正在批量分析")
-                .setContentText("$stage$media：$processed/${progress.total}")
+                .setContentTitle(text.title)
+                .setContentText(text.content)
                 .setProgress(
                     progress.total.coerceAtLeast(0),
                     processed.coerceAtLeast(0),
@@ -729,6 +752,12 @@ class BatchAnalysisWorker(
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
     }
+
+    private fun currentRunMode(): AnalysisRunMode =
+        (applicationContext as FrameYuApplication)
+            .appVisibilityTracker
+            .visibility
+            .toAnalysisRunMode()
 
     companion object {
         private const val PROGRESS_EMISSION_INTERVAL_MILLIS = 1_000L
@@ -751,6 +780,11 @@ class BatchAnalysisWorker(
         }
     }
 }
+
+private val BatchAnalysisProgress.processed: Int
+    get() = (completed.toLong() + failed.toLong())
+        .coerceIn(0L, Int.MAX_VALUE.toLong())
+        .toInt()
 
 class BatchAnalysisWorkerFactory(
     private val runnerProvider: () -> BatchAnalysisRunner,
