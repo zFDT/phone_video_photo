@@ -1,11 +1,9 @@
 package com.frameyu.app.analysis.batch
 
 import android.content.Context
-import android.content.pm.ServiceInfo
 import android.database.SQLException
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
@@ -638,6 +636,8 @@ class BatchAnalysisWorker(
     workerParams: WorkerParameters,
     private val runner: BatchAnalysisRunner,
 ) : CoroutineWorker(appContext, workerParams) {
+    private val notificationFactory = BatchAnalysisNotificationFactory(appContext)
+
     constructor(appContext: Context, workerParams: WorkerParameters) : this(
         appContext,
         workerParams,
@@ -723,24 +723,7 @@ class BatchAnalysisWorker(
         batchId: Long,
         progress: BatchAnalysisProgress,
         text: BatchNotificationText,
-    ): ForegroundInfo {
-        val processed = progress.processed
-        return ForegroundInfo(
-            notificationId(batchId),
-            NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle(text.title)
-                .setContentText(text.content)
-                .setProgress(
-                    progress.total.coerceAtLeast(0),
-                    processed.coerceAtLeast(0),
-                    progress.total <= 0,
-                )
-                .setOngoing(true)
-                .build(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
-    }
+    ): ForegroundInfo = notificationFactory.create(batchId, progress, text)
 
     companion object {
         private const val PROGRESS_EMISSION_INTERVAL_MILLIS = 1_000L

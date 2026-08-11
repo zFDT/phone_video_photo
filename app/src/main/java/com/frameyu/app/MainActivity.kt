@@ -2,6 +2,7 @@ package com.frameyu.app
 
 import android.app.Activity
 import android.app.RecoverableSecurityException
+import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
 import android.os.Bundle
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.frameyu.app.data.media.MediaUriAccess
+import com.frameyu.app.analysis.batch.BatchAnalysisIntents
 import com.frameyu.app.ui.library.LibraryScreen
 import com.frameyu.app.ui.library.LibraryViewModel
 import com.frameyu.app.ui.library.CandidateBrowserScreen
@@ -146,6 +148,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openBatchFromIntent(intent)
         restorePendingMediaAuthorization(savedInstanceState)
         recoverPendingMediaAuthorization()
         enableEdgeToEdge()
@@ -262,6 +265,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openBatchFromIntent(intent)
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         AndroidPendingMediaAuthorizationStore.toBundle(mediaAuthorizationCallbackRequestId)?.let {
             outState.putBundle(STATE_PENDING_MEDIA_AUTHORIZATION, it)
@@ -282,6 +291,16 @@ class MainActivity : ComponentActivity() {
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         permissionLauncher.launch(permissions)
+    }
+
+    private fun openBatchFromIntent(intent: Intent?) {
+        val batchId = intent?.let(BatchAnalysisIntents::openBatchId) ?: return
+        selectedBatchId.value = batchId
+        showOrganizer.value = false
+        showSettings.value = false
+        selectedCandidateMedia.value = null
+        selectedCandidate.value = null
+        returnToOrganizerAfterCandidates.value = false
     }
 
     private fun openDeepAnalysis() {
