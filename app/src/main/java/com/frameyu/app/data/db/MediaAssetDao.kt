@@ -23,6 +23,9 @@ interface MediaAssetDao {
     @Query("SELECT COUNT(*) FROM media_assets")
     suspend fun count(): Int
 
+    @Query("SELECT COUNT(*) FROM media_assets")
+    fun observeCount(): Flow<Int>
+
     @Query("SELECT * FROM media_assets ORDER BY taken_at_millis DESC")
     suspend fun getAll(): List<MediaAssetEntity>
 

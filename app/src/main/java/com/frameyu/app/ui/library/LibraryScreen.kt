@@ -61,7 +61,7 @@ fun LibraryScreen(
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            text = scanStateText(uiState.scanState),
+            text = scanStateText(uiState.scanState, uiState.mediaCount),
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -279,8 +279,12 @@ private fun analysisActionText(status: String?): String = when (status) {
 private fun videoDisplayName(video: MediaAssetEntity): String =
     video.uri.substringAfterLast('/').ifBlank { "视频 ${video.id}" }
 
-private fun scanStateText(scanState: MediaScanState): String = when (scanState) {
-    MediaScanState.Idle -> "尚未开始扫描"
+internal fun scanStateText(scanState: MediaScanState, mediaCount: Int): String = when (scanState) {
+    MediaScanState.Idle -> if (mediaCount > 0) {
+        "已恢复本地索引，共 $mediaCount 个媒体"
+    } else {
+        "尚未开始扫描"
+    }
     is MediaScanState.Scanning -> "正在扫描媒体…"
     is MediaScanState.Completed -> "扫描完成，本次更新 ${scanState.indexedCount} 个媒体"
     is MediaScanState.Failed -> "扫描失败：${scanState.message}"

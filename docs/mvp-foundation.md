@@ -85,7 +85,7 @@ $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
 
 结果为 `BUILD SUCCESSFUL`：66 个测试套件、433 个 JVM 测试，0 failure、0 error、0 skipped；`:app:assembleDebug` 与 `:app:compileDebugAndroidTestKotlin` 均通过。`git diff --check` 通过，提交前工作树范围检查仅包含本任务两份文档。
 
-Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,811,103 字节，SHA-256 为 `85AC9A42CD2FD152BF48A15F3E06754FAB1F7E08D12F1370300331A0A9B631D1`；该生成物不提交。
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,516,592 字节，SHA-256 为 `DA71E4A819C85800808CAE3516C3A4A5C459AEFF0DEE6B956DA3DD587FD30729`；该生成物不提交。
 
 当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
@@ -93,17 +93,19 @@ Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,
 
 断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro（`23117RK66C`，Android 16，HyperOS 构建 `OS3.0.304.0.WNMCNXM`）运行 Room 断点 instrumentation 测试并通过。
 
-任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro 完成 AndroidTest，3 个测试中 2 个通过、1 个因未授予媒体读取权限跳过。WorkManager 前台通知、后台限制和真实视频解码性能仍需专项手动验证。
+任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest` 已成功通过；2026-08-11 已在 Redmi K70 Pro 验证批次前台服务和通知通道。后台限制和真实长视频解码性能仍需专项手动验证。
 
 真机安装验证：2026-08-11 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 覆盖安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片、视频和通知权限。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
 
-扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；修复后重新安装并点击全量扫描，设备显示扫描完成并更新 `10097` 个媒体。
+扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；2026-08-11 再次全量扫描成功索引 10,293 个媒体，其中视频 1,040 个。媒体总数改为直接观察 Room `COUNT(*)`，覆盖安装或进程重建后首页仍能恢复真实计数和批次入口。
 
-2026-08-11 已在 Redmi K70 Pro 上完成 53 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、视频断点恢复和取消边界；全部通过。真机测试后主包、测试包及运行时权限均保留。
+2026-08-11 已在 Redmi K70 Pro 上完成 54 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、媒体计数 Flow、视频断点恢复和取消边界；按 8 + 1 + 45 三组明确类清单运行，全部通过。真机测试后主包、测试包及运行时权限均保留。
+
+同日创建批次 #1：10,293 个媒体生成 37,012 个工作项。已验证暂停、继续、覆盖安装、强制停止进程和重新启动后的自动续跑；批次保持同一 ID 和 checkpoint，当前安全暂停在 2,746/37,012，失败 0。前台通知进度增加 1 秒节流，12 秒观测窗口内 `ACTION_NOTIFY` 从 126 次降至 15 次；运行时设备温度 34.5°C，进程 PSS 约 393 MB。
 
 本次批量模型管线尚未执行以下 Redmi K70 Pro 手动验收：
 
-- 1 万级媒体批量分析、中断恢复和失败重试。
+- 1 万级媒体批量分析已完成中断恢复验证；仍需跑到终态并验证真实失败重试。
 - 演唱会长视频的性能、温控、取消与断点恢复。
 - Android R+ 系统回收站授权及 Activity 重建对账。
 - HyperOS 动态照片兼容性。

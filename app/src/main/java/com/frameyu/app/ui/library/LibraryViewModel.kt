@@ -33,10 +33,10 @@ class LibraryViewModel(
     private val analysisTaskDao: AnalysisTaskDao,
     private val workScheduler: VideoAnalysisWorkScheduler,
 ) : ViewModel() {
-    private val _mediaCount = MutableStateFlow(0)
     private val _indexedCount = MutableStateFlow(0)
     private val scanJob = MutableStateFlow<Job?>(null)
     private var lastScanModifiedMillis: Long? = null
+    private val mediaCount = repository.observeMediaCount()
     private val videos = repository.observeVideos()
     private val analysisTasks = analysisTaskDao.observeTasks().map { tasks ->
         tasks.associateBy { it.mediaAssetId }
@@ -44,7 +44,7 @@ class LibraryViewModel(
 
     val uiState: StateFlow<LibraryUiState> = combine(
         repository.scanState,
-        _mediaCount,
+        mediaCount,
         _indexedCount,
         videos,
         analysisTasks,
@@ -107,7 +107,6 @@ class LibraryViewModel(
         scanJob.value = viewModelScope.launch {
             try {
                 _indexedCount.value = operation()
-                _mediaCount.value = repository.mediaCount()
                 lastScanModifiedMillis = scanBoundaryMillis
             } catch (cancellation: CancellationException) {
                 throw cancellation

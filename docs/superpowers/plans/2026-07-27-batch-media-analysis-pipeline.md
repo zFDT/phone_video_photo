@@ -972,7 +972,7 @@ git status --short
 
 预期：只有本任务文档修改；模型二进制和 `module/` 不出现。
 
-版本控制记录：`.gitignore` 已忽略 `module/`、生成的模型 assets 和 `*/build/`，模型源缓存与 APK 均不提交。Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小 191,500,208 字节，SHA-256 为 `5898EA4A9738221162C7B43457427A853184795B46D10A0553B8A388F7C3CDA9`。
+版本控制记录：`.gitignore` 已忽略 `module/`、生成的模型 assets 和 `*/build/`，模型源缓存与 APK 均不提交。Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小 191,516,592 字节，SHA-256 为 `DA71E4A819C85800808CAE3516C3A4A5C459AEFF0DEE6B956DA3DD587FD30729`。
 
 - [x] **步骤 4：更新里程碑文档**
 
@@ -991,6 +991,8 @@ git add docs/mvp-foundation.md docs/superpowers/plans/2026-07-27-batch-media-ana
 git commit -m "docs: 更新批量模型分析里程碑"
 ```
 
-- [ ] **步骤 6：请求真机接入**
+- [x] **步骤 6：请求真机接入**
 
-只有上述离线验证全部通过后，才请用户连接 Redmi K70 Pro。尚未执行的真机阶段包括：模型 assets instrumentation、1 万级媒体批量分析与中断恢复、演唱会长视频性能/温控/取消、Android R+ 系统回收站授权与 Activity 重建，以及 HyperOS 动态照片兼容性。
+2026-08-11 已连接 Redmi K70 Pro，完成 54 项 instrumentation、10,293 个媒体扫描，以及 37,012 项批次的暂停、继续、覆盖安装和进程重建恢复验证。验收中修复了首页媒体计数无法从 Room 恢复，以及批次 Worker 每工作项高频刷新通知的问题。批次当前暂停在 2,746/37,012，失败 0。
+
+尚未执行完成的真机阶段包括：批次跑到终态与真实失败重试、演唱会长视频性能/温控/取消、Android R+ 系统回收站授权与 Activity 重建，以及 HyperOS 动态照片兼容性。

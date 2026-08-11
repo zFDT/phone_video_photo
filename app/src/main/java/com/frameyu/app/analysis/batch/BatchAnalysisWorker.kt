@@ -3,6 +3,7 @@ package com.frameyu.app.analysis.batch
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.database.SQLException
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -631,6 +632,10 @@ class BatchAnalysisWorker(
                 }
             },
         )
+        val progressEmissionPolicy = BatchProgressEmissionPolicy(
+            minIntervalMillis = PROGRESS_EMISSION_INTERVAL_MILLIS,
+            nowMillis = SystemClock::elapsedRealtime,
+        )
         return when (
             val outcome = execution.execute(
                 batchId = batchId,
@@ -645,8 +650,10 @@ class BatchAnalysisWorker(
                     )
                 },
                 onProgress = { progress ->
-                    setProgress(progress.toData())
-                    setForeground(createForegroundInfo(batchId, progress))
+                    if (progressEmissionPolicy.shouldEmit(progress)) {
+                        setProgress(progress.toData())
+                        setForeground(createForegroundInfo(batchId, progress))
+                    }
                 },
             )
         ) {
@@ -684,6 +691,7 @@ class BatchAnalysisWorker(
     }
 
     companion object {
+        private const val PROGRESS_EMISSION_INTERVAL_MILLIS = 1_000L
         const val UNIQUE_WORK_NAME = "frameyu-batch-analysis"
         const val KEY_BATCH_ID = "batch_id"
         const val KEY_EXECUTION_GENERATION = "execution_generation"

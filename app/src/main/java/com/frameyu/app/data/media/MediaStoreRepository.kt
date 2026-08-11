@@ -17,6 +17,8 @@ class MediaStoreRepository(
 
     suspend fun mediaCount(): Int = scanner.mediaCount()
 
+    fun observeMediaCount(): Flow<Int> = scanner.observeMediaCount()
+
     fun observeVideos(): Flow<List<MediaAssetEntity>> = scanner.observeVideos()
 
     /** 执行全量扫描，并将扫描状态暴露给上层。 */

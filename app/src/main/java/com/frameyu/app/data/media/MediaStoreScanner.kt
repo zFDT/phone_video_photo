@@ -83,6 +83,8 @@ class MediaStoreScanner(
         mediaAssetDao.count()
     }
 
+    fun observeMediaCount(): Flow<Int> = mediaAssetDao.observeCount()
+
     fun observeVideos(): Flow<List<MediaAssetEntity>> = mediaAssetDao.observeVideos()
 
     private fun queryCount(sinceLastModifiedMillis: Long?, scanBoundaryMillis: Long): Int {

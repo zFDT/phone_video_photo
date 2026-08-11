@@ -17,6 +17,21 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AnalysisCandidateCoverDaoTest {
     @Test
+    fun observeMediaCountReflectsPersistedAssets() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
+        try {
+            assertEquals(0, database.mediaAssetDao().observeCount().first())
+
+            database.mediaAssetDao().upsertAll(listOf(media(1L), media(2L)))
+
+            assertEquals(2, database.mediaAssetDao().observeCount().first())
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun deleteMediaByUrisOnlyRemovesRequestedAssetsAndCascadesCandidates() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
