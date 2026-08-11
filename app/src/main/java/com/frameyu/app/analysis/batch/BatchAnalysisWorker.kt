@@ -159,6 +159,10 @@ fun interface BatchWorkItemCoordinator {
     suspend fun analyze(item: AnalysisWorkItemEntity)
 }
 
+fun interface BatchWorkPacer {
+    suspend fun awaitAfter(stage: String)
+}
+
 /** Room 与单张图片协调器的生产适配边界。 */
 class RoomBatchAnalysisStore(
     private val dao: BatchAnalysisDao,
@@ -299,12 +303,14 @@ class BatchAnalysisRunner(
     private val store: BatchAnalysisStore,
     private val coordinatorProvider: () -> BatchWorkItemCoordinator,
     private val pageSize: Int = DEFAULT_PAGE_SIZE,
+    private val pacer: BatchWorkPacer = BatchWorkPacer {},
 ) {
     constructor(
         store: BatchAnalysisStore,
         coordinator: BatchWorkItemCoordinator,
         pageSize: Int = DEFAULT_PAGE_SIZE,
-    ) : this(store, { coordinator }, pageSize)
+        pacer: BatchWorkPacer = BatchWorkPacer {},
+    ) : this(store, { coordinator }, pageSize, pacer)
 
     init {
         require(pageSize > 0) { "分页大小必须大于 0" }
@@ -419,6 +425,12 @@ class BatchAnalysisRunner(
                     }
                     localSnapshot = localSnapshot.afterFailure(retryable)
                     onProgress(localSnapshot.toProgress(item))
+                    paceAfterIfRunning(
+                        batchId,
+                        executionGeneration,
+                        currentStage,
+                        currentMediaId,
+                    )?.let { return it }
                     continue
                 }
 
@@ -439,6 +451,12 @@ class BatchAnalysisRunner(
                 }
                 localSnapshot = localSnapshot.afterCompletion()
                 onProgress(localSnapshot.toProgress(item))
+                paceAfterIfRunning(
+                    batchId,
+                    executionGeneration,
+                    currentStage,
+                    currentMediaId,
+                )?.let { return it }
             }
             afterId = page.last().id
         }
@@ -586,9 +604,31 @@ class BatchAnalysisRunner(
         }
     }
 
+    private suspend fun paceAfterIfRunning(
+        batchId: Long,
+        executionGeneration: Long,
+        currentStage: String,
+        currentMediaId: Long,
+    ): BatchAnalysisResult? {
+        if (currentStage !in PACED_STAGES) return null
+        controlledResultForNonRunningState(
+            batchId,
+            executionGeneration,
+            currentStage,
+            currentMediaId,
+        )?.let { return it }
+        pacer.awaitAfter(currentStage)
+        return null
+    }
+
     private companion object {
         const val DEFAULT_PAGE_SIZE = 32
         const val DEPENDENCY_FAILURE_MESSAGE = "条件检测的当前批次分类依赖未完成"
+        val PACED_STAGES = setOf(
+            AnalysisStage.CLASSIFICATION.name,
+            AnalysisStage.EMBEDDING.name,
+            AnalysisStage.CONDITIONAL_DETECTION.name,
+        )
     }
 }
 

@@ -13,6 +13,111 @@ import org.junit.Test
 
 class BatchAnalysisRunnerTest {
     @Test
+    fun `分类成功先持久化并发布进度再 pace`() = runBlocking {
+        val classification = item(1L, WorkItemStatus.PENDING).copy(
+            stage = AnalysisStage.CLASSIFICATION.name,
+        )
+        val store = FakeBatchAnalysisStore(listOf(classification))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator {},
+            pacer = BatchWorkPacer { stage -> store.events += "pace:$stage" },
+        )
+
+        runner.run(BATCH_ID) { progress ->
+            if (progress.completed == 1) store.events += "progress"
+        }
+
+        assertEquals(
+            listOf("complete:1", "progress", "pace:CLASSIFICATION"),
+            store.events,
+        )
+    }
+
+    @Test
+    fun `分类普通失败先持久化并发布进度再 pace`() = runBlocking {
+        val classification = item(1L, WorkItemStatus.PENDING).copy(
+            stage = AnalysisStage.CLASSIFICATION.name,
+        )
+        val store = FakeBatchAnalysisStore(listOf(classification))
+        val runner = BatchAnalysisRunner(
+            store = store,
+            coordinator = BatchWorkItemCoordinator { error("模型输入无效") },
+            pacer = BatchWorkPacer { stage -> store.events += "pace:$stage" },
+        )
+
+        runner.run(BATCH_ID) { progress ->
+            if (progress.failed == 1) store.events += "progress"
+        }
+
+        assertEquals(
+            listOf("fail:1", "progress", "pace:CLASSIFICATION"),
+            store.events,
+        )
+    }
+
+    @Test
+    fun `质量阶段不 pace`() = runBlocking {
+        val pacedStages = mutableListOf<String>()
+        val runner = BatchAnalysisRunner(
+            store = FakeBatchAnalysisStore(items(1L)),
+            coordinator = BatchWorkItemCoordinator {},
+            pacer = BatchWorkPacer(pacedStages::add),
+        )
+
+        runner.run(BATCH_ID)
+
+        assertTrue(pacedStages.isEmpty())
+    }
+
+    @Test
+    fun `依赖未完成路径不 pace`() = runBlocking {
+        val conditional = item(1L, WorkItemStatus.PENDING).copy(
+            stage = AnalysisStage.CONDITIONAL_DETECTION.name,
+        )
+        val pacedStages = mutableListOf<String>()
+        val runner = BatchAnalysisRunner(
+            store = FakeBatchAnalysisStore(listOf(conditional)),
+            coordinator = BatchWorkItemCoordinator {},
+            pacer = BatchWorkPacer(pacedStages::add),
+        )
+
+        runner.run(BATCH_ID)
+
+        assertTrue(pacedStages.isEmpty())
+    }
+
+    @Test
+    fun `分类完成后观察到暂停或取消时不 pace`() = runBlocking {
+        listOf(BatchAnalysisStatus.PAUSED, BatchAnalysisStatus.CANCELLED).forEach { status ->
+            val classification = item(1L, WorkItemStatus.PENDING).copy(
+                stage = AnalysisStage.CLASSIFICATION.name,
+            )
+            val store = FakeBatchAnalysisStore(listOf(classification))
+            val pacedStages = mutableListOf<String>()
+            val runner = BatchAnalysisRunner(
+                store = store,
+                coordinator = BatchWorkItemCoordinator {},
+                pacer = BatchWorkPacer(pacedStages::add),
+            )
+
+            val result = runner.run(BATCH_ID) { progress ->
+                if (progress.completed == 1) {
+                    when (status) {
+                        BatchAnalysisStatus.PAUSED -> store.pauseBatch(BATCH_ID)
+                        BatchAnalysisStatus.CANCELLED -> store.cancelBatch(BATCH_ID)
+                        else -> error("测试状态不受支持：$status")
+                    }
+                }
+            }
+
+            assertTrue("$status 不应 pace", pacedStages.isEmpty())
+            assertEquals(status == BatchAnalysisStatus.PAUSED, result.paused)
+            assertEquals(status == BatchAnalysisStatus.CANCELLED, result.cancelled)
+        }
+    }
+
+    @Test
     fun `单项可重试失败不终止后续工作项`() = runBlocking {
         val store = FakeBatchAnalysisStore(items(1L, 2L, 3L))
         val analyzed = mutableListOf<Long>()
@@ -920,6 +1025,7 @@ private class FakeBatchAnalysisStore(
     val failedItemIds = mutableListOf<Long>()
     val completedItemIds = mutableListOf<Long>()
     val requestedCursors = mutableListOf<Long>()
+    val events = mutableListOf<String>()
     var beforeMarkBatchRunning: (suspend () -> Unit)? = null
     var beforeCompleteItem: (suspend () -> Unit)? = null
     var beforeFinishBatch: (suspend () -> Unit)? = null
@@ -1030,6 +1136,7 @@ private class FakeBatchAnalysisStore(
         if (item.status != WorkItemStatus.RUNNING.name) return false
         completedItemIds += itemId
         items[itemId] = item.copy(status = WorkItemStatus.COMPLETED.name)
+        events += "complete:$itemId"
         return true
     }
 
@@ -1049,6 +1156,7 @@ private class FakeBatchAnalysisStore(
             },
             errorMessage = message,
         )
+        events += "fail:$itemId"
         return true
     }
 

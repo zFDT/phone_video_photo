@@ -18,6 +18,7 @@ import com.frameyu.app.analysis.batch.BatchAnalysisScheduler
 import com.frameyu.app.analysis.batch.BatchAnalysisStore
 import com.frameyu.app.analysis.batch.BatchAnalysisWorker
 import com.frameyu.app.analysis.batch.BatchAnalysisWorkerFactory
+import com.frameyu.app.analysis.batch.BatchWorkPacer
 import com.frameyu.app.analysis.batch.AnalysisStage
 import com.frameyu.app.analysis.batch.AnalyzerVersion
 import com.frameyu.app.analysis.batch.ImageBatchWorkItemCoordinator
@@ -51,6 +52,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class FrameYuApplication : Application(), Configuration.Provider {
@@ -182,6 +184,13 @@ class FrameYuApplication : Application(), Configuration.Provider {
             store = batchAnalysisStore,
             coordinatorProvider = {
                 ImageBatchWorkItemCoordinator(imageAnalysisCoordinator)
+            },
+            pacer = BatchWorkPacer {
+                val delayMillis = backgroundPacingPolicy.delayAfter(
+                    visibility = appVisibilityTracker.visibility,
+                    isHeavyUnit = true,
+                )
+                if (delayMillis > 0L) delay(delayMillis)
             },
         )
     }
