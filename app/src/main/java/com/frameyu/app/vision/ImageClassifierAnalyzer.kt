@@ -2,7 +2,6 @@ package com.frameyu.app.vision
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.imageclassifier.ImageClassifier
@@ -66,8 +65,7 @@ class MediaPipeImageClassifierAnalyzer internal constructor(
         }
 
         try {
-            val image = BitmapImageBuilder(bitmap).build()
-            try {
+            withMediaPipeBitmapImage(bitmap) { image ->
                 activeClassifier.classify(image)
                     .classificationResult()
                     .classifications()
@@ -84,8 +82,6 @@ class MediaPipeImageClassifierAnalyzer internal constructor(
                     }
                     .sortedByDescending(LabelScore::score)
                     .take(MAX_RESULTS)
-            } finally {
-                image.close()
             }
         } catch (error: Exception) {
             throw IllegalStateException("图像分类失败：${error.modelMessage()}", error)

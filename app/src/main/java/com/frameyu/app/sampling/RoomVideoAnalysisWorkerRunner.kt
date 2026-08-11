@@ -16,7 +16,9 @@ import com.frameyu.app.system.ThermalState
 import com.frameyu.app.system.ThermalStatus
 import com.frameyu.app.vision.FrameModelAnalyzer
 import java.io.Closeable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 
 /** 视频帧解码薄边界，便于在不读取真实媒体文件时验证生产 runner。 */
 interface VideoFrameSource : Closeable {
@@ -47,10 +49,10 @@ private class MediaMetadataRetrieverFrameSource : VideoFrameSource {
 class RoomVideoAnalysisWorkerRunner(
     private val context: Context,
     private val database: FrameYuDatabase,
-    private val lifecycleStore: VideoAnalysisRunnerStore = RoomVideoAnalysisLifecycleStore(database),
+    private val nowMillis: () -> Long = { System.currentTimeMillis() },
+    private val lifecycleStore: VideoAnalysisRunnerStore = RoomVideoAnalysisLifecycleStore(database, nowMillis),
     private val frameModelAnalyzerProvider: () -> FrameModelAnalyzer,
     private val frameModelStoreProvider: () -> RoomVideoFrameModelStore,
-    private val nowMillis: () -> Long = { System.currentTimeMillis() },
     private val concertModeEnabledProvider: () -> Boolean = { false },
     private val thermalStatusProvider: () -> ThermalStatus = { ThermalStatus.NOMINAL },
     private val thermalPollIntervalMillis: Long = THERMAL_POLL_INTERVAL_MILLIS,
@@ -82,6 +84,7 @@ class RoomVideoAnalysisWorkerRunner(
             closeResource = { frameSource?.close() },
         ) {
             val claimResult = lifecycleStore.claim(execution)
+            currentCoroutineContext().ensureActive()
             if (claimResult == VideoAnalysisClaimResult.STALE) {
                 return@runTaskLifecycle VideoAnalysisTaskResult.Skipped
             }

@@ -2,7 +2,6 @@ package com.frameyu.app.vision
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.components.containers.Detection
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -74,13 +73,10 @@ class MediaPipeObjectDetectorAnalyzer internal constructor(
         }
 
         try {
-            val image = BitmapImageBuilder(bitmap).build()
-            try {
+            withMediaPipeBitmapImage(bitmap) { image ->
                 activeDetector.detect(image).detections().mapNotNull { detection ->
                     detection.toObservation(bitmap.width, bitmap.height)
                 }
-            } finally {
-                image.close()
             }
         } catch (error: Exception) {
             throw IllegalStateException("目标检测失败：${error.modelMessage()}", error)

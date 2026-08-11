@@ -85,7 +85,7 @@ $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
 
 结果为 `BUILD SUCCESSFUL`：66 个测试套件、433 个 JVM 测试，0 failure、0 error、0 skipped；`:app:assembleDebug` 与 `:app:compileDebugAndroidTestKotlin` 均通过。`git diff --check` 通过，提交前工作树范围检查仅包含本任务两份文档。
 
-Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,500,208 字节，SHA-256 为 `5898EA4A9738221162C7B43457427A853184795B46D10A0553B8A388F7C3CDA9`；该生成物不提交。
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,811,103 字节，SHA-256 为 `85AC9A42CD2FD152BF48A15F3E06754FAB1F7E08D12F1370300331A0A9B631D1`；该生成物不提交。
 
 当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
@@ -95,23 +95,28 @@ Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,
 
 任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro 完成 AndroidTest，3 个测试中 2 个通过、1 个因未授予媒体读取权限跳过。WorkManager 前台通知、后台限制和真实视频解码性能仍需专项手动验证。
 
-真机安装验证：2026-07-24 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片和视频读取权限；通知权限仍为未授予状态。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
+真机安装验证：2026-08-11 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 覆盖安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片、视频和通知权限。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
 
 扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；修复后重新安装并点击全量扫描，设备显示扫描完成并更新 `10097` 个媒体。
 
-本次批量模型管线尚未执行以下 Redmi K70 Pro 真机验收：
+2026-08-11 已在 Redmi K70 Pro 上完成 53 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、视频断点恢复和取消边界；全部通过。真机测试后主包、测试包及运行时权限均保留。
 
-- 模型 assets instrumentation 初始化与推理。
+本次批量模型管线尚未执行以下 Redmi K70 Pro 手动验收：
+
 - 1 万级媒体批量分析、中断恢复和失败重试。
 - 演唱会长视频的性能、温控、取消与断点恢复。
 - Android R+ 系统回收站授权及 Activity 重建对账。
 - HyperOS 动态照片兼容性。
 
-连接设备后执行基础 instrumentation：
+连接设备后使用覆盖安装和手动 instrumentation，避免 Gradle `connectedDebugAndroidTest` 在任务结束时卸载测试包及被测应用，导致运行数据和权限丢失：
 
 ```powershell
-./gradlew :app:connectedDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -r com.frameyu.app.test/androidx.test.runner.AndroidJUnitRunner
 ```
+
+除非明确需要验证首次安装流程，不执行 `adb uninstall`、`pm clear` 或测试后 APK 清理；重复验证始终使用 `adb install -r`，并保留 `app/build/outputs/apk/debug/app-debug.apk` 供真机体验。
 
 多设备协作时应保留项目内的 `gradlew`、`gradlew.bat` 和 `gradle/wrapper`，不要提交 `local.properties`、`.gradle` 缓存或本地媒体文件。
 

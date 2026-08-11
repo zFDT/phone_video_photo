@@ -118,7 +118,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `同 generation RUNNING 重投从 checkpoint 续跑并保留历史规则候选`() = runBlocking {
+    fun `同_generation_RUNNING_重投从_checkpoint_续跑并保留历史规则候选`() = runBlocking {
         val plan = SamplingPlan.create(3_000L)
         seed(
             durationMillis = 3_000L,
@@ -161,7 +161,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `RESUME 预热使首帧评分与不中断一致且不重复持久化或推进 checkpoint`() = runBlocking {
+    fun `RESUME_预热使首帧评分与不中断一致且不重复持久化或推进_checkpoint`() = runBlocking {
         val plan = SamplingPlan.create(3_000L)
         val uninterruptedHighValue = mutableMapOf<Long, Boolean>()
         seed(durationMillis = 3_000L)
@@ -293,7 +293,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `RESUME 温控持续 PAUSED 时协作取消及时退出且不解码不推进 checkpoint`() = runBlocking {
+    fun `RESUME_温控持续_PAUSED_时协作取消及时退出且不解码不推进_checkpoint`() = runBlocking {
         val plan = SamplingPlan.create(3_000L)
         seed(
             durationMillis = 3_000L,
@@ -336,7 +336,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `旧 generation 节点 no-op 且不创建解码器`() = runBlocking {
+    fun `旧_generation_节点_no-op_且不创建解码器`() = runBlocking {
         seed(durationMillis = 1L, task = task(executionGeneration = 2L))
         val source = RecordingFrameSource()
 
@@ -352,7 +352,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `运行中协作取消在下一帧停止并保留 checkpoint`() = runBlocking {
+    fun `运行中协作取消在下一帧停止并保留_checkpoint`() = runBlocking {
         seed(durationMillis = 3_000L, task = task(executionGeneration = 5L))
         val source = RecordingFrameSource()
         val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }
@@ -374,7 +374,7 @@ class RoomVideoAnalysisWorkerRunnerTest {
     }
 
     @Test
-    fun `旧 runner 不能覆盖新 generation 状态`() = runBlocking {
+    fun `旧_runner_不能覆盖新_generation_状态`() = runBlocking {
         seed(durationMillis = 3_000L, task = task(executionGeneration = 5L))
         val source = RecordingFrameSource()
         val lifecycleStore = RoomVideoAnalysisLifecycleStore(database) { 99L }

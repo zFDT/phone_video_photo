@@ -3,7 +3,6 @@ package com.frameyu.app.vision
 import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
 import android.content.Context
-import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.imageembedder.ImageEmbedder
 import java.io.Closeable
@@ -72,14 +71,11 @@ class MediaPipeImageEmbeddingAnalyzer internal constructor(
                 )
             }
             try {
-                val image = BitmapImageBuilder(input.bitmap).build()
-                try {
+                withMediaPipeBitmapImage(input.bitmap) { image ->
                     val result = requireNotNull(embedder).embed(image)
                     val embedding = result.embeddingResult().embeddings().firstOrNull()
                         ?: error("MediaPipe 未返回图像向量")
                     EmbeddingObservationMapper.map(embedding.floatEmbedding())
-                } finally {
-                    image.close()
                 }
             } catch (error: Exception) {
                 if (error is VisionAnalysisException) throw error

@@ -37,7 +37,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `首次准备创建 generation0 排队任务`() = runBlocking {
+    fun `首次准备创建_generation0_排队任务`() = runBlocking {
         val execution = store.prepareExecution(1L)
 
         assertEquals(VideoAnalysisExecutionKey(1L, 0L), execution)
@@ -47,7 +47,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `终态重试原子提升 generation 并清空错误与 checkpoint`() = runBlocking {
+    fun `终态重试原子提升_generation_并清空错误与_checkpoint`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(
             task(
                 status = "FAILED",
@@ -70,7 +70,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `活动任务重复准备保持 generation 和 checkpoint`() = runBlocking {
+    fun `活动任务重复准备保持_generation_和_checkpoint`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(
             task(
                 status = "RUNNING",
@@ -90,7 +90,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `取消单个和全部活动任务只更新数据库并提升 generation`() = runBlocking {
+    fun `取消单个和全部活动任务只更新数据库并提升_generation`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(task(status = "RUNNING", generation = 2L))
         database.analysisTaskDao().saveTaskProgress(
             task(id = 2L, status = "QUEUED", generation = 7L),
@@ -108,7 +108,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `同代入队失败落 FAILED 且旧代不能覆盖新状态`() = runBlocking {
+    fun `同代入队失败落_FAILED_且旧代不能覆盖新状态`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(task(status = "QUEUED", generation = 2L))
 
         assertTrue(
@@ -131,7 +131,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `Fresh claim 清理候选帧且同代 RUNNING claim 恢复执行`() = runBlocking {
+    fun `Fresh_claim_清理候选帧且同代_RUNNING_claim_恢复执行`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(task(status = "QUEUED", generation = 2L))
         database.analysisCandidateDao().upsertAll(listOf(candidate()))
         val execution = VideoAnalysisExecutionKey(1L, 2L)
@@ -147,7 +147,7 @@ class RoomVideoAnalysisLifecycleStoreTest {
     }
 
     @Test
-    fun `Resume claim 保留 checkpoint 前候选帧`() = runBlocking {
+    fun `Resume_claim_保留_checkpoint_前候选帧`() = runBlocking {
         database.analysisTaskDao().saveTaskProgress(task(status = "RUNNING", generation = 2L))
         database.analysisCandidateDao().upsertAll(listOf(candidate()))
 

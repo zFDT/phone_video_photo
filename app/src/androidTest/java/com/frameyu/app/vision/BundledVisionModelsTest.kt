@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.frameyu.app.vision.model.ModelAssetCatalog
 import com.frameyu.app.vision.model.ModelAssetVerifier
 import com.frameyu.app.vision.model.ModelId
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -44,13 +45,16 @@ class BundledVisionModelsTest {
             val labels = classifier.classify(bitmap)
             assertTrue(labels.size <= 5)
             assertTrue(labels.zipWithNext().all { (first, second) -> first.score >= second.score })
+            assertFalse("分类器不应回收调用方 Bitmap", bitmap.isRecycled)
 
             val detections = detector.detect(bitmap)
             assertTrue(detections.size <= 10)
+            assertFalse("检测器不应回收调用方 Bitmap", bitmap.isRecycled)
 
             val embedding = embedder.analyzeSynchronously(ThumbnailInput.fromBitmap(bitmap)).values
             assertTrue(embedding.isNotEmpty())
             assertTrue(embedding.all(Float::isFinite))
+            assertFalse("向量分析器不应回收调用方 Bitmap", bitmap.isRecycled)
         } finally {
             val closeResults = listOf(
                 runCatching { classifier.close() },
