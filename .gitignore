@@ -31,6 +31,7 @@ secrets.properties
 # Local analysis data and media samples
 .frameyu-cache/
 .codegraph/
+.superpowers/
 /.worktrees/
 /module/
 /app/src/main/assets/models/*.tflite
