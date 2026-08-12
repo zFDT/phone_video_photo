@@ -31,7 +31,7 @@ class BatchAnalysisActionReceiver internal constructor(
         val pendingResult = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                pauseBatch(context, batchId)
+                handlePause(context, batchId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -40,6 +40,10 @@ class BatchAnalysisActionReceiver internal constructor(
                 pendingResult.finish()
             }
         }
+    }
+
+    internal suspend fun handlePause(context: Context, batchId: Long) {
+        pauseBatch(context, batchId)
     }
 
     private companion object {

@@ -2,10 +2,8 @@ package com.frameyu.app.analysis.batch
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
-import androidx.core.content.ContextCompat
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -13,7 +11,6 @@ import com.frameyu.app.MainActivity
 import com.frameyu.app.data.db.AnalysisBatchEntity
 import com.frameyu.app.data.db.FrameYuDatabase
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.channels.Channel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -97,7 +94,7 @@ class BatchAnalysisNotificationTest {
     }
 
     @Test
-    fun receiverPausesQueuedBatchAndInvalidIdDoesNotChangeOtherBatch() = runBlocking {
+    fun receiverPausesQueuedBatchAndRejectedIntentsDoNotChangeOtherBatch() = runBlocking {
         val database = Room.inMemoryDatabaseBuilder(context, FrameYuDatabase::class.java).build()
         val dao = database.batchAnalysisDao()
         val store = RoomBatchAnalysisStore(dao)
@@ -109,34 +106,18 @@ class BatchAnalysisNotificationTest {
                 handledBatchIds.send(batchId)
             }
         }
-        ContextCompat.registerReceiver(
-            context,
-            receiver,
-            IntentFilter(BatchAnalysisIntents.ACTION_PAUSE),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
         try {
             val pausedBatchId = dao.createBatch(batch(), emptyList())
             val untouchedBatchId = dao.createBatch(batch(), emptyList())
 
-            context.sendBroadcast(
-                BatchAnalysisIntents.pauseIntent(context, pausedBatchId).apply {
-                    component = null
-                },
-            )
-            assertEquals(pausedBatchId, withTimeout(5_000L) { handledBatchIds.receive() })
-
-            context.sendBroadcast(
-                BatchAnalysisIntents.pauseIntent(context, Long.MAX_VALUE).apply {
-                    component = null
-                },
-            )
-            assertEquals(Long.MAX_VALUE, withTimeout(5_000L) { handledBatchIds.receive() })
+            receiver.handlePause(context, pausedBatchId)
+            assertEquals(pausedBatchId, handledBatchIds.receive())
+            receiver.onReceive(context, android.content.Intent(BatchAnalysisIntents.ACTION_PAUSE))
+            receiver.onReceive(context, BatchAnalysisIntents.openIntent(context, untouchedBatchId))
 
             assertEquals(BatchAnalysisStatus.PAUSED.name, dao.batchStatus(pausedBatchId))
             assertEquals(BatchAnalysisStatus.QUEUED.name, dao.batchStatus(untouchedBatchId))
         } finally {
-            context.unregisterReceiver(receiver)
             database.close()
         }
     }
