@@ -454,7 +454,7 @@ Manifest 注册 `android:exported="false"`。Pause Intent 显式指定 Receiver�
 
 通过 `ApplicationProvider` 调用 `BatchAnalysisNotificationFactory` 构造通知并断言两个 action 的标题和 PendingIntent 非空。创建一个 `QUEUED` 测试批次，显式发送暂停广播，条件轮询 Room 直到 `PAUSED`；无效批次 ID 不改变测试批次。
 
-- [ ] **步骤 6：运行测试**
+- [x] **步骤 6：运行测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.analysis.batch.*' :app:assembleDebugAndroidTest
@@ -462,6 +462,8 @@ adb shell am instrument -w -e class com.frameyu.app.analysis.batch.BatchAnalysis
 ```
 
 预期：JVM PASS；仪器测试 `OK` 且 0 failures。
+
+验证记录：通知测试 3 项全部通过；随后纳入显式全量 class 列表，共 `OK (59 tests)`、0 failures。
 
 - [x] **步骤 7：Commit**
 
@@ -529,7 +531,7 @@ END) AS failed_media_count
 
 失败详情仍按工作项展示阶段和错误；不得把损坏原图自动转码或覆盖。
 
-- [ ] **步骤 5：运行 JVM 与 DAO 真机测试**
+- [x] **步骤 5：运行 JVM 与 DAO 真机测试**
 
 ```powershell
 ./gradlew.bat --offline :app:testDebugUnitTest --tests 'com.frameyu.app.ui.analysis.*' :app:assembleDebugAndroidTest
@@ -537,6 +539,8 @@ adb shell am instrument -w -e class com.frameyu.app.data.db.BatchAnalysisDaoTest
 ```
 
 预期：PASS；DAO instrumentation `OK` 且 0 failures。
+
+验证记录：JVM 测试通过；`BatchAnalysisDaoTest` 已包含在 Redmi K70 Pro 的 59 项显式 instrumentation 套件中并通过。
 
 - [x] **步骤 6：Commit**
 
@@ -560,7 +564,7 @@ git diff --check
 
 预期：`BUILD SUCCESSFUL`，0 JVM failures，`git diff --check` 无输出。
 
-- [ ] **步骤 2：覆盖安装，不卸载、不清数据**
+- [x] **步骤 2：覆盖安装，不卸载、不清数据**
 
 ```powershell
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -569,11 +573,13 @@ adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
 预期：两次均输出 `Success`；MediaStore 权限和批次 #1 保留。
 
-- [ ] **步骤 3：运行全部 instrumentation 测试**
+验证记录：主包和测试包安装均输出 `Success`，后续只使用 `-r`/`-r -t` 覆盖安装；未执行卸载或清数据。首次成功安装前设备中不存在主包，因此本轮重新授予权限并建立索引，此后权限和批次数据均保留。
 
-使用显式 class 列表避免自动发现卡住，至少覆盖新增通知测试、DAO、视频 runner、模型资产和既有 54 项套件。每组输出必须为 `OK`，总 failure 为 0。
+- [x] **步骤 3：运行全部 instrumentation 测试**
 
-- [ ] **步骤 4：验证后台持续运行**
+使用显式 class 列表避免自动发现卡住，覆盖新增通知测试、DAO、视频 runner、模型资产等 59 项测试。结果为 `OK (59 tests)`，总 failure 为 0。
+
+- [x] **步骤 4：验证后台持续运行**
 
 记录批次完成数 A，执行：
 
@@ -583,9 +589,13 @@ adb shell input keyevent KEYCODE_HOME
 
 在不启动其他压力测试的情况下等待 60 秒，再读取 UI/Room 可见进度 B。验收 `B > A`、前台服务仍存在、通知文案包含“后台友好”、进程无 `AndroidRuntime` 崩溃。
 
-- [ ] **步骤 5：验证通知暂停和重新打开继续**
+验证记录：批次 #1 在后台从 99/37,044 增长到 351、517、1,112；通知显示阶段、“后台友好”、失败 0 和约 3 小时 ETA，前台服务存在，未发现 `AndroidRuntime` 崩溃。
+
+- [x] **步骤 5：验证通知暂停和重新打开继续**
 
 通过通知“暂停”，确认批次状态为 `PAUSED` 且前台服务退出；划走 Activity 后重新打开，状态仍为暂停且完成数不归零。点击“继续”，确认同一批次 ID 从原 checkpoint 增长。
+
+验证记录：通知点击打开同一批次，进度 1,112→1,713；暂停于 2,081 后强制结束进程并重开，仍为 `PAUSED` 且完成数保持 2,081；继续后同一批次增长至 2,786。验收结束时再次暂停，通知和前台服务均已退出。
 
 - [x] **步骤 6：记录损坏 PNG 诊断证据**
 
@@ -598,7 +608,7 @@ git add docs/mvp-foundation.md docs/superpowers/plans/2026-08-11-background-batc
 git commit -m "docs: 记录后台分析与损坏媒体验收"
 ```
 
-- [ ] **步骤 8：最终检查**
+- [x] **步骤 8：最终检查**
 
 ```powershell
 git status --short
@@ -607,3 +617,5 @@ Get-FileHash app/build/outputs/apk/debug/app-debug.apk -Algorithm SHA256
 ```
 
 预期：工作区干净；所有实现与文档 commit 存在；Debug APK 保留在构建目录并报告 SHA-256。
+
+验证记录：71 个套件、476 个 JVM 测试全部通过，0 failures、0 errors；74 个 Gradle 任务强制重新执行并 `BUILD SUCCESSFUL`。Debug APK SHA-256 为 `037910AECB4533D42FCB751B08135761AC015CF25D58ACE70B3096757A3E395A`，AndroidTest APK SHA-256 为 `810A739E80E513A305AD51FD25B95DF10F3F47169F50531C8F376CE1ACD472D5`。

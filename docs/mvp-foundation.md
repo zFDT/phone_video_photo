@@ -87,7 +87,7 @@ $env:ANDROID_SDK_ROOT='D:\flutter\sdk\android'
 
 结果为 `BUILD SUCCESSFUL`：71 个测试套件、476 个 JVM 测试，0 failure、0 error；74 个 Gradle 任务全部重新执行，`:app:assembleDebug` 与 `:app:assembleDebugAndroidTest` 均通过。`git diff --check` 通过。
 
-Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,565,784 字节，SHA-256 为 `9242AC4D2ACDB8B5FC6E2BCC3004EF9EE498296EA90E397B34033292CDF497F4`；AndroidTest APK 大小为 1,139,577 字节，SHA-256 为 `63D5F17DDEE606C836DC79C1086A24F1DD021D87B12EE6BBBB9A6C35342D4F9E`。两个生成物均不提交，也不在测试后删除。
+Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,565,784 字节，SHA-256 为 `037910AECB4533D42FCB751B08135761AC015CF25D58ACE70B3096757A3E395A`；AndroidTest APK 大小为 1,136,481 字节，SHA-256 为 `810A739E80E513A305AD51FD25B95DF10F3F47169F50531C8F376CE1ACD472D5`。两个生成物均不提交，也不在测试后删除。
 
 当前扫描支持图片/视频分批查询、修改时间和文件大小增量过滤、稳定扫描上界、实时进度、Android 14 部分媒体权限和 Photo Picker 授权。
 
@@ -95,21 +95,21 @@ Debug APK 保留在 `app/build/outputs/apk/debug/app-debug.apk`，大小为 191,
 
 断点验证：`:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` 已成功通过；2026-07-24 已在 Redmi K70 Pro（`23117RK66C`，Android 16，HyperOS 构建 `OS3.0.304.0.WNMCNXM`）运行 Room 断点 instrumentation 测试并通过。
 
-任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest` 已成功通过；2026-08-11 已在 Redmi K70 Pro 验证批次前台服务和通知通道。后台友好节流、通知暂停/打开和失败媒体去重已完成代码与本地回归，仍需在目标 Redmi K70 Pro 上完成最终交互验收。
+任务调度验证：`:app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest` 已成功通过；2026-08-12 已在 Redmi K70 Pro 完成后台持续运行、通知返回批次、暂停持久化和断点继续验收。后台友好节流、通知运行模式/ETA、通知操作和失败媒体去重均已完成本地与真机回归。
 
-真机安装验证：2026-08-11 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 覆盖安装 Debug APK，包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。设备已授予图片、视频和通知权限。桌面图标已配置为项目内 `ic_launcher` 矢量资源。
+真机安装验证：2026-08-12 已通过 `adb install -r app/build/outputs/apk/debug/app-debug.apk` 和 `adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` 安装并随后覆盖安装。包名为 `com.frameyu.app`，启动入口为 `com.frameyu.app/.MainActivity`，版本 `0.1.0 (versionCode 1)`。本轮首次成功安装前设备中不存在该包，因此没有旧应用数据可恢复；此后所有验证均未卸载或清数据，图片、视频、位置和通知权限以及新建索引、批次均被保留。桌面图标使用项目内 `ic_launcher` 矢量资源。
 
-扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；2026-08-11 再次全量扫描成功索引 10,293 个媒体，其中视频 1,040 个。媒体总数改为直接观察 Room `COUNT(*)`，覆盖安装或进程重建后首页仍能恢复真实计数和批次入口。
+扫描真机验证：Redmi K70 Pro Android 16 首次扫描暴露 `Invalid column has_gain_map`，已增加 HDR 可选列失败降级；2026-08-12 全量扫描成功索引 10,305 个媒体，其中视频 1,044 个。媒体总数直接观察 Room `COUNT(*)`，覆盖安装或进程重建后首页仍能恢复真实计数和批次入口。
 
-2026-08-11 已在 Redmi K70 Pro 上完成 54 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、媒体计数 Flow、视频断点恢复和取消边界；按 8 + 1 + 45 三组明确类清单运行，全部通过。真机测试后主包、测试包及运行时权限均保留。
+2026-08-12 已在 Redmi K70 Pro 上完成 59 项 instrumentation 测试，覆盖模型 assets 校验与真实推理、Room 迁移与批次状态机、媒体计数 Flow、视频断点恢复和取消边界，以及通知构建、暂停处理和非法 Intent 隔离，结果为 `OK (59 tests)`、0 failures。测试曾暴露 AndroidTest 与主应用 UID 不同，`RECEIVER_NOT_EXPORTED` 会正确拒绝测试进程动态广播；测试改为直接调用接收器的内部暂停处理入口，生产广播仍保持显式且不导出。真机测试后主包、测试包及运行时权限均保留。
 
-同日创建批次 #1：10,293 个媒体生成 37,012 个工作项。已验证暂停、继续、覆盖安装、强制停止进程和重新启动后的自动续跑；批次保持同一 ID 和 checkpoint。前台通知进度增加 1 秒节流，12 秒观测窗口内 `ACTION_NOTIFY` 从 126 次降至 15 次；运行时设备温度 34.5°C，进程 PSS 约 393 MB。本轮未连接目标设备，未重新读取该批次的当前完成数。
+同日创建批次 #1：10,305 个媒体生成 37,044 个工作项。应用退到后台后，完成数在观测窗口内从 99 增长到 351、517，并继续增长到 1,112；通知持续显示“后台友好”、阶段、失败数和约 3 小时 ETA，前台服务保持运行且无 `AndroidRuntime` 崩溃。点击通知可打开同一个批次，进度继续到 1,713。暂停后批次停在 2,081，强制结束进程并重新打开仍显示同一批次 `PAUSED`、2,081/37,044；点击继续后增长到 2,786，证明 checkpoint 未重置。验收结束时已再次暂停，失败工作项 0，APK、授权、索引和批次数据均保留在设备上。
 
 解码失败诊断已定位到媒体 ID `1001180282`，路径为 `Pictures/Lark/1768878273557.png`。文件 PNG 签名正确，尺寸 1488×2105、大小 459,827 字节，但首个 `IDAT` 数据块 CRC 校验错误；独立解码器同样报告损坏，因此不是权限、模型或 Android 解码配置问题。质量、分类、向量和条件检测四个阶段各产生一个失败工作项，实际只涉及这一张损坏图片。应用按永久失败隔离并保留原文件，不自动转码、覆盖或删除；新页面会显示“失败工作项：4（涉及 1 个媒体）”。
 
 本次批量模型管线尚未执行以下 Redmi K70 Pro 手动验收：
 
-- 1 万级媒体批量分析已完成中断恢复验证；仍需跑到终态并验证真实失败重试、后台持续增长、通知暂停和通知返回批次页。
+- 1 万级媒体批量分析已完成后台持续增长、通知返回批次、暂停持久化和断点继续验证；仍需让 37,044 项批次跑到终态，并验证真实失败重试。
 - 演唱会长视频的性能、温控、取消与断点恢复。
 - Android R+ 系统回收站授权及 Activity 重建对账。
 - HyperOS 动态照片兼容性。
@@ -135,4 +135,4 @@ adb shell am instrument -w -r com.frameyu.app.test/androidx.test.runner.AndroidJ
 - `75b9a6c fix(P0): 加固批次版本与阶段依赖`：补齐并发幂等、四阶段版本矩阵和分类到条件检测依赖。
 - `542dfb9 feat(P1): 增加批量分析和整理确认页面` 及后续任务 9 修复：接入批次页面、统一整理、失败详情限流和安全删除授权。
 - `e1a59ed fix(P0): 终结重复扫描流与授权过期锁`：完成可取消散列和授权过期对账的最终质量门禁。
-- `d334e2a` 至 `d2e8e32`：完成应用可见性跟踪、图片/视频后台节流、通知运行模式与 ETA、通知暂停/打开，以及失败工作项和失败媒体去重展示。
+- `d334e2a` 至 `8f49da5`：完成应用可见性跟踪、图片/视频后台节流、通知运行模式与 ETA、通知暂停/打开、失败工作项和失败媒体去重展示，以及通知暂停真机测试隔离。
